@@ -1,9 +1,11 @@
 use std::sync::{Arc, RwLock};
 
 use chrono::{DateTime, Utc};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
-#[derive(Debug, Clone, Serialize)]
+use crate::config::AppConfig;
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ReconciliationStatus {
     pub completed: bool,
     pub live_trading_unlocked: bool,
@@ -41,18 +43,18 @@ impl StartupGate {
             .clone()
     }
 
-    pub fn mark_passed(&self, live_trading_requested: bool) {
+    pub fn mark_passed(&self, live_trading_unlocked: bool) {
         let mut status = self
             .status
             .write()
             .expect("reconciliation status lock poisoned");
         status.completed = true;
-        status.live_trading_unlocked = live_trading_requested;
+        status.live_trading_unlocked = live_trading_unlocked;
         status.last_checked_at = Some(Utc::now());
-        status.reason = if live_trading_requested {
+        status.reason = if live_trading_unlocked {
             "startup_checks_passed_live_trading_unlocked"
         } else {
-            "startup_checks_passed_no_live_trading_requested"
+            "startup_checks_passed_trading_locked"
         }
         .to_owned();
     }
@@ -76,5 +78,34 @@ impl StartupGate {
 impl Default for StartupGate {
     fn default() -> Self {
         Self::pending()
+    }
+}
+
+pub fn can_unlock_live_trading(config: &AppConfig) -> bool {
+    config.trading.enabled
+        && config.trading.mode == "live"
+        && config.database.enabled
+        && config.cache.enabled
+        && config.risk.kill_switch.enabled
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::config::AppConfig;
+
+    use super::can_unlock_live_trading;
+
+    #[test]
+    fn live_trading_gate_requires_database_cache_and_kill_switch() {
+        let mut config = AppConfig::from_default_toml().expect("default config parses");
+        config.trading.enabled = true;
+        config.trading.mode = "live".to_owned();
+        config.database.enabled = true;
+        config.cache.enabled = true;
+        config.risk.kill_switch.enabled = true;
+        assert!(can_unlock_live_trading(&config));
+
+        config.cache.enabled = false;
+        assert!(!can_unlock_live_trading(&config));
     }
 }

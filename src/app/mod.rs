@@ -13,14 +13,19 @@ use tower_http::{timeout::TimeoutLayer, trace::TraceLayer};
 use tracing::info;
 
 use crate::{
-    api, app::reconciliation::StartupGate, cache::Cache, config::AppConfig,
-    observability::HealthRegistry, storage::Db,
+    api,
+    app::reconciliation::StartupGate,
+    cache::Cache,
+    config::AppConfig,
+    observability::{HealthRegistry, RuntimeMetrics},
+    storage::Db,
 };
 
 #[derive(Clone)]
 pub struct AppState {
     pub config: Arc<AppConfig>,
     pub health: HealthRegistry,
+    pub metrics: RuntimeMetrics,
     pub startup_gate: StartupGate,
     pub db: Option<Db>,
     pub cache: Option<Cache>,
@@ -30,6 +35,7 @@ impl AppState {
     pub async fn bootstrap(config: AppConfig) -> Result<Self> {
         let config = Arc::new(config);
         let health = HealthRegistry::new();
+        let metrics = RuntimeMetrics::default();
         let startup_gate = StartupGate::pending();
         let db = Db::connect_optional(&config.database).await?;
         let cache = Cache::connect_optional(&config.cache).await?;
@@ -42,10 +48,12 @@ impl AppState {
         health.set_component("alert", false);
         health.set_component("trading", false);
         health.set_component("reconciliation", false);
+        health.set_component("exchange", config.exchange.platform == "paper");
 
         Ok(Self {
             config,
             health,
+            metrics,
             startup_gate,
             db,
             cache,

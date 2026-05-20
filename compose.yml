@@ -1,0 +1,100 @@
+name: coinnesia
+
+services:
+  postgres:
+    image: docker.io/library/postgres:15-alpine
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-coinnesia}
+      POSTGRES_USER: ${POSTGRES_USER:-coinnesia}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-coinnesia}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    networks:
+      - coinnesia
+    ports:
+      - "${POSTGRES_PORT:-5432}:5432"
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB} -h 127.0.0.1",
+        ]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  valkey:
+    image: docker.io/valkey/valkey:7.2
+    command: ["valkey-server", "--appendonly", "yes", "--save", "60", "1000"]
+    volumes:
+      - valkeydata:/data
+    networks:
+      - coinnesia
+    ports:
+      - "${VALKEY_PORT:-6379}:6379"
+    healthcheck:
+      test: ["CMD", "valkey-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  migrator:
+    image: docker.io/library/postgres:15-alpine
+    depends_on:
+      - postgres
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-coinnesia}
+      POSTGRES_USER: ${POSTGRES_USER:-coinnesia}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-coinnesia}
+      PGPASSWORD: ${POSTGRES_PASSWORD:-coinnesia}
+    volumes:
+      - ./src/storage/migrations:/migrations:ro,Z
+    command:
+      - sh
+      - -c
+      - |
+        set -e
+        until pg_isready -h postgres -U "$$POSTGRES_USER" -d "$$POSTGRES_DB" -p 5432 >/dev/null 2>&1; do
+          echo "Waiting for postgres..."
+          sleep 1
+        done
+        for file in /migrations/*.sql; do
+          [ -e "$$file" ] || continue
+          echo "Running migration $$file"
+          psql -v ON_ERROR_STOP=1 -h postgres -U "$$POSTGRES_USER" -d "$$POSTGRES_DB" -p 5432 -f "$$file"
+        done
+        echo "Migrations complete."
+    networks:
+      - coinnesia
+    restart: "no"
+
+  adminer:
+    image: docker.io/library/adminer:latest
+    depends_on:
+      - postgres
+    environment:
+      ADMINER_DEFAULT_SERVER: postgres
+    networks:
+      - coinnesia
+    ports:
+      - "${ADMINER_PORT:-8081}:8080"
+
+  redisinsight:
+    image: docker.io/redis/redisinsight:latest
+    depends_on:
+      - valkey
+    volumes:
+      - redisinsightdata:/data
+    networks:
+      - coinnesia
+    ports:
+      - "${REDISINSIGHT_PORT:-8082}:5540"
+
+networks:
+  coinnesia:
+    driver: bridge
+
+volumes:
+  pgdata:
+  valkeydata:
+  redisinsightdata:

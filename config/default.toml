@@ -71,6 +71,7 @@ auth_token_env = "COINNESIA_API_TOKEN"
 [database]
 enabled = false
 url_env = "DATABASE_URL"
+#url_env = "postgres://coinnesia:coinnesia@localhost:5432/coinnesia"
 max_connections = 10
 min_connections = 1
 connect_timeout_secs = 5
@@ -79,6 +80,7 @@ migrate_on_start = false
 [cache]
 enabled = false
 url_env = "VALKEY_URL"
+#url_env = "redis://localhost:6379/0"
 key_prefix = "coinnesia"
 pool_size = 10
 ttl_seconds = 300

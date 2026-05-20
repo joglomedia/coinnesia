@@ -5,7 +5,7 @@ use tokio::{task::JoinSet, time};
 use tokio_util::sync::CancellationToken;
 use tracing::{error, info};
 
-use crate::app::AppState;
+use crate::app::{reconciliation::can_unlock_live_trading, AppState};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum WorkerStatus {
@@ -117,8 +117,8 @@ async fn run_reconciliation_worker(state: AppState, shutdown: CancellationToken)
             Ok(())
         }
         _ = time::sleep(Duration::from_millis(100)) => {
-            state.startup_gate.mark_passed(state.config.trading.enabled);
-            state.health.set_component("reconciliation", true);
+            state.startup_gate.mark_passed(can_unlock_live_trading(&state.config));
+            state.health.heartbeat("reconciliation");
             info!(
                 worker = "reconciliation",
                 live_trading_unlocked = state.startup_gate.live_trading_unlocked(),
@@ -130,7 +130,10 @@ async fn run_reconciliation_worker(state: AppState, shutdown: CancellationToken)
 }
 
 async fn run_trading_worker(state: AppState, shutdown: CancellationToken) -> Result<()> {
-    if state.config.trading.enabled && !state.startup_gate.live_trading_unlocked() {
+    if state.config.trading.enabled
+        && state.config.trading.mode == "live"
+        && !state.startup_gate.live_trading_unlocked()
+    {
         state.health.set_component("trading", false);
         info!(
             worker = "trading",
@@ -164,9 +167,10 @@ async fn run_placeholder_loop(
     state: AppState,
     shutdown: CancellationToken,
 ) -> Result<()> {
-    state.health.set_component(name, true);
+    state.health.heartbeat(name);
     info!(worker = name, "worker started");
-    let mut heartbeat = time::interval(Duration::from_secs(30));
+    let heartbeat_secs = (state.config.runtime.health_stale_after_secs / 3).clamp(1, 30);
+    let mut heartbeat = time::interval(Duration::from_secs(heartbeat_secs));
 
     loop {
         tokio::select! {
@@ -176,7 +180,7 @@ async fn run_placeholder_loop(
                 return Ok(());
             }
             _ = heartbeat.tick() => {
-                state.health.set_component(name, true);
+                state.health.heartbeat(name);
             }
         }
     }
@@ -192,9 +196,10 @@ mod tests {
     use crate::{app::supervisor::Supervisor, config::AppConfig};
 
     #[tokio::test]
-    async fn supervisor_reconciliation_unlocks_trading_when_enabled() {
+    async fn supervisor_reconciliation_allows_paper_trading_worker() {
         let mut config = AppConfig::from_default_toml().expect("default config parses");
         config.trading.enabled = true;
+        config.trading.mode = "paper".to_owned();
         let state = crate::app::AppState::bootstrap(config)
             .await
             .expect("state boots");
@@ -204,7 +209,7 @@ mod tests {
 
         time::timeout(Duration::from_secs(1), async {
             loop {
-                if state.health.is_healthy("trading") {
+                if state.health.is_healthy("trading") && state.startup_gate.status().completed {
                     break;
                 }
                 time::sleep(Duration::from_millis(20)).await;
@@ -214,7 +219,7 @@ mod tests {
         .expect("trading worker should become healthy after reconciliation");
 
         assert!(state.startup_gate.status().completed);
-        assert!(state.startup_gate.live_trading_unlocked());
+        assert!(!state.startup_gate.live_trading_unlocked());
 
         shutdown.cancel();
         task.await
@@ -253,5 +258,57 @@ mod tests {
         assert!(!state.health.is_healthy("alert"));
         assert!(!state.health.is_healthy("trading"));
         assert!(!state.health.is_healthy("reconciliation"));
+    }
+
+    #[tokio::test]
+    async fn supervisor_keeps_live_trading_locked_without_runtime_dependencies() {
+        let mut config = AppConfig::from_default_toml().expect("default config parses");
+        config.trading.enabled = true;
+        config.trading.mode = "live".to_owned();
+        let state = crate::app::AppState::bootstrap(config)
+            .await
+            .expect("state boots");
+        let shutdown = CancellationToken::new();
+        let supervisor = Supervisor::new(state.clone(), shutdown.child_token());
+        let task = tokio::spawn(supervisor.run());
+
+        time::timeout(Duration::from_secs(1), async {
+            loop {
+                if state.startup_gate.status().completed && !state.health.is_healthy("supervisor") {
+                    break;
+                }
+                time::sleep(Duration::from_millis(20)).await;
+            }
+        })
+        .await
+        .expect("live trading gate should fail closed");
+
+        assert!(!state.startup_gate.live_trading_unlocked());
+        assert!(!state.health.is_healthy("trading"));
+
+        shutdown.cancel();
+        task.await
+            .expect("supervisor task joins")
+            .expect("supervisor exits cleanly");
+    }
+
+    #[tokio::test]
+    async fn health_snapshot_marks_stale_components_unhealthy() {
+        let config = AppConfig::from_default_toml().expect("default config parses");
+        let state = crate::app::AppState::bootstrap(config)
+            .await
+            .expect("state boots");
+
+        state.health.heartbeat("scanner");
+        let snapshot = state.health.snapshot_with_staleness(Duration::from_secs(0));
+        let component = snapshot
+            .components
+            .iter()
+            .find(|component| component.name == "scanner")
+            .expect("scanner component exists");
+
+        assert!(component.stale);
+        assert!(!component.healthy);
+        assert!(!snapshot.healthy);
     }
 }

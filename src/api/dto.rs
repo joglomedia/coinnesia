@@ -17,6 +17,9 @@ pub struct HealthResponse {
 pub struct ComponentHealth {
     pub name: String,
     pub healthy: bool,
+    pub stale: bool,
+    pub heartbeat_required: bool,
+    pub last_heartbeat_age_secs: Option<u64>,
 }
 
 impl HealthResponse {
@@ -29,6 +32,9 @@ impl HealthResponse {
                 .map(|component| ComponentHealth {
                     name: component.name,
                     healthy: component.healthy,
+                    stale: component.stale,
+                    heartbeat_required: component.heartbeat_required,
+                    last_heartbeat_age_secs: component.last_heartbeat_age_secs,
                 })
                 .collect(),
             reconciliation: None,

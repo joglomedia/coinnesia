@@ -9,14 +9,18 @@ use crate::{
 
 pub async fn health(State(state): State<AppState>) -> Json<HealthResponse> {
     Json(
-        HealthResponse::from_snapshot(state.health.snapshot())
-            .with_reconciliation(state.startup_gate.status()),
+        HealthResponse::from_snapshot(state.health.snapshot_with_staleness(
+            std::time::Duration::from_secs(state.config.runtime.health_stale_after_secs),
+        ))
+        .with_reconciliation(state.startup_gate.status()),
     )
 }
 
 pub async fn ready(State(state): State<AppState>) -> (StatusCode, Json<HealthResponse>) {
-    let response = HealthResponse::from_snapshot(state.health.snapshot())
-        .with_reconciliation(state.startup_gate.status());
+    let response = HealthResponse::from_snapshot(state.health.snapshot_with_staleness(
+        std::time::Duration::from_secs(state.config.runtime.health_stale_after_secs),
+    ))
+    .with_reconciliation(state.startup_gate.status());
     let status = if response.healthy {
         StatusCode::OK
     } else {
@@ -26,18 +30,22 @@ pub async fn ready(State(state): State<AppState>) -> (StatusCode, Json<HealthRes
 }
 
 pub async fn metrics(State(state): State<AppState>) -> String {
-    let snapshot = state.health.snapshot();
-    format!(
-        "coinnesia_up 1\ncoinnesia_components {}\n",
-        snapshot.components.len()
-    )
+    let snapshot = state
+        .health
+        .snapshot_with_staleness(std::time::Duration::from_secs(
+            state.config.runtime.health_stale_after_secs,
+        ));
+    state.metrics.render_prometheus(snapshot.components.len())
 }
 
 pub async fn config_summary(State(state): State<AppState>) -> Json<ConfigSummary> {
     Json(ConfigSummary::from_config(&state.config))
 }
 
-pub async fn scan_trigger_placeholder(_auth: ApiAuth) -> Json<Value> {
+pub async fn scan_trigger_placeholder(
+    State(_state): State<AppState>,
+    _auth: ApiAuth,
+) -> Json<Value> {
     Json(json!({
         "accepted": true,
         "reason": "scan trigger endpoint scaffolded; scanner service wiring pending"
