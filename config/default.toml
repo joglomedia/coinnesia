@@ -1,0 +1,180 @@
+# Core indicator parameters
+[indicators]
+ema_fast = 20
+ema_slow = 50
+ema_trend = 200
+atr_length = 14
+rsi_length = 14
+volume_ma_length = 20
+adx_length = 14
+adx_smoothing = 14
+macd_fast = 12
+macd_slow = 26
+macd_signal = 9
+
+[strategy]
+min_directional_gap = 10.0
+min_confidence_15m = 72.0
+min_confidence_1h = 67.0
+min_confidence_4h = 64.0
+min_confidence_1d = 58.0
+structure_lookback = 18
+min_structure_score = 60.0
+
+[entry_plan]
+swing_lookback = 24
+ew1_min_atr = 0.12
+ew1_max_atr = 0.85
+ew2_atr = 0.42
+ew3_atr = 0.78
+deep_add_atr = 1.12
+entry_zone_atr = 0.15
+tp1_atr = 0.48
+tp2_atr = 0.88
+tp3_atr = 1.35
+tp_step_min_atr = 0.22
+max_tp1_atr = 0.95
+max_tp2_atr = 1.45
+max_tp3_atr = 2.10
+min_sl_distance_atr = 0.50
+max_sl_distance_atr = 3.20
+sl_extra_asia_atr = 0.15
+sl_extra_europe_atr = 0.22
+sl_extra_usa_atr = 0.30
+
+[trap_guard]
+trap_score_threshold = 60.0
+trap_volume_z = 2.0
+wick_trap_atr = 0.70
+cooldown_bars = 3
+
+[session]
+timezone = "Asia/Jakarta"
+asia_start = "06:00"
+asia_end = "14:00"
+europe_start = "14:00"
+europe_end = "22:00"
+usa_start = "19:00"
+usa_end = "03:00"
+idx_start = "09:00"
+idx_end = "15:00"
+forex_rollover_avoid_start = "04:55"
+forex_rollover_avoid_end = "06:10"
+
+[server]
+enabled = false
+host = "127.0.0.1"
+port = 8080
+request_timeout_secs = 10
+auth_token_env = "COINNESIA_API_TOKEN"
+
+[database]
+enabled = false
+url_env = "DATABASE_URL"
+max_connections = 10
+min_connections = 1
+connect_timeout_secs = 5
+migrate_on_start = false
+
+[cache]
+enabled = false
+url_env = "VALKEY_URL"
+key_prefix = "coinnesia"
+pool_size = 10
+ttl_seconds = 300
+
+[runtime]
+scan_interval_secs = 60
+shutdown_timeout_secs = 15
+max_symbol_tasks = 128
+health_stale_after_secs = 180
+
+[exchange]
+platform = "paper"
+testnet = true
+rate_limit_per_second = 10
+
+[trading]
+enabled = false
+mode = "scan_only"
+order_type = "limit"
+use_oco = true
+trailing_stop_after_tp1 = true
+trailing_stop_atr = 0.50
+
+[trading.scaling]
+ew1_pct = 40.0
+ew2_pct = 30.0
+ew3_pct = 20.0
+deep_add_pct = 10.0
+tp1_close_pct = 50.0
+tp2_close_pct = 30.0
+tp3_close_pct = 20.0
+
+[portfolio]
+total_capital_usdt = 10000.0
+reserve_pct = 10.0
+max_open_positions = 10
+max_positions_per_asset = 4
+
+[portfolio.allocation]
+btc_pct = 30.0
+altcoin_pct = 25.0
+gold_pct = 15.0
+forex_pct = 15.0
+stocks_pct = 15.0
+
+[risk]
+max_risk_per_trade_pct = 2.0
+position_sizing_method = "fixed_pct"
+min_risk_reward = 1.5
+max_trades_per_day = 20
+cooldown_after_loss_secs = 300
+
+[risk.drawdown]
+warning_pct = 3.0
+caution_pct = 5.0
+critical_pct = 8.0
+max_account_drawdown_pct = 15.0
+
+[risk.kill_switch]
+enabled = true
+close_positions_on_trigger = true
+max_api_errors = 10
+manual_restart_required = true
+
+[backtest]
+enabled = false
+start_date = "2024-01-01"
+end_date = "2025-01-01"
+initial_capital = 10000.0
+data_source = "api"
+
+[backtest.fees]
+maker_fee_pct = 0.02
+taker_fee_pct = 0.04
+slippage_model = "fixed"
+slippage_bps = 5.0
+
+[[symbols]]
+symbol = "BTCUSDT"
+asset_class = "btc"
+exchange = "binance"
+timeframes = ["15m", "1h", "4h", "1d"]
+
+[[symbols]]
+symbol = "ETHUSDT"
+asset_class = "btc"
+exchange = "binance"
+timeframes = ["15m", "1h", "4h", "1d"]
+
+[[symbols]]
+symbol = "PAXGUSDT"
+asset_class = "gold"
+exchange = "binance"
+timeframes = ["1h", "4h", "1d"]
+
+[proxy_symbols]
+xauusd = "GC=F"
+ihsg = "^JKSE"
+dxy = "DX-Y.NYB"

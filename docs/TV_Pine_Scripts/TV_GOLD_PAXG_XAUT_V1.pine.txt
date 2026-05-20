@@ -1,0 +1,1525 @@
+//@version=6
+indicator("GOLD PAXG/XAUT V63.0 PRO SMC - Adaptive Gold Flow Panel", overlay=true, max_lines_count=300, max_labels_count=300, max_boxes_count=80, max_bars_back=5000, dynamic_requests=true)
+
+//==================================================
+// GROUPS
+//==================================================
+groupCore    = "1. Core"
+groupTrend   = "2. V55 Trend Engine"
+groupPlan    = "3. EW / TP Plan"
+groupProtect = "4. V58 SL + Trap Protection"
+groupAlt     = "4B. GOLD TOKEN / RWA Adaptive Engine"
+groupSMC     = "5. PRO SMC / Structure Upgrade"
+groupUI      = "6. Panel / Plot"
+
+//==================================================
+// INPUTS
+//==================================================
+string sym = syminfo.tickerid
+string WIB = "Asia/Jakarta"
+
+emaFastLen  = input.int(20, "EMA Fast", minval=1, group=groupCore)
+emaSlowLen  = input.int(50, "EMA Slow", minval=2, group=groupCore)
+emaTrendLen = input.int(200, "EMA Trend", minval=20, group=groupCore)
+atrLen      = input.int(14, "ATR Length", minval=1, group=groupCore)
+rsiLen      = input.int(14, "RSI Length", minval=2, group=groupCore)
+volLen      = input.int(20, "Volume MA Length", minval=5, group=groupCore)
+useSessionNormalizedVolume = input.bool(true, "Use Full Session-Normalized Volume", group=groupCore)
+sessVolLen   = input.int(34, "Session Volume Baseline Length", minval=8, maxval=200, group=groupCore)
+sessVolShockZ = input.float(2.20, "Session Volume Shock Z", minval=0.5, maxval=8.0, step=0.1, group=groupCore)
+sessVolBreakoutRatio = input.float(1.15, "Session Breakout Volume Ratio", minval=0.5, maxval=5.0, step=0.05, group=groupCore)
+adxLen      = input.int(14, "ADX Length", minval=5, group=groupCore)
+adxSmooth   = input.int(14, "ADX Smoothing", minval=5, group=groupCore)
+macdFast    = input.int(12, "MACD Fast", minval=1, group=groupCore)
+macdSlow    = input.int(26, "MACD Slow", minval=2, group=groupCore)
+macdSignal  = input.int(9, "MACD Signal", minval=1, group=groupCore)
+
+minDirectionalGap = input.int(10, "Min Long/Short Gap", minval=0, maxval=50, group=groupTrend)
+minConf15M = input.int(72, "Min Confidence 15M", minval=0, maxval=100, group=groupTrend)
+minConf1H  = input.int(67, "Min Confidence 1H", minval=0, maxval=100, group=groupTrend)
+minConf4H  = input.int(64, "Min Confidence 4H", minval=0, maxval=100, group=groupTrend)
+minConf1D  = input.int(58, "Min Confidence 1D+", minval=0, maxval=100, group=groupTrend)
+blockCounterTrend = input.bool(true, "Block Counter Trend", group=groupTrend)
+blockChop = input.bool(true, "Block Chop / Sideways", group=groupTrend)
+useStructuralTrend = input.bool(true, "PRO: Require BOS/Structure Trend Filter", group=groupTrend)
+structLookback = input.int(18, "PRO: BOS/Structure Lookback", minval=8, maxval=80, group=groupTrend)
+minStructScore = input.int(60, "PRO: Minimum Structure Score", minval=0, maxval=100, group=groupTrend)
+strictTrendMode = input.bool(true, "PRO: Strict 85-Style Trend Mode", group=groupTrend)
+
+
+swingLookback  = input.int(24, "Anchor Swing Lookback", minval=8, maxval=200, group=groupPlan)
+ew1MinATR      = input.float(0.12, "EW1 Min ATR From Price", minval=0.02, maxval=2.0, step=0.01, group=groupPlan)
+ew1MaxATR      = input.float(0.85, "EW1 Max ATR From Price", minval=0.20, maxval=5.0, step=0.05, group=groupPlan)
+ew2ATR         = input.float(0.42, "EW2 Distance ATR", minval=0.10, maxval=3.0, step=0.05, group=groupPlan)
+ew3ATR         = input.float(0.78, "EW3 Distance ATR", minval=0.20, maxval=4.0, step=0.05, group=groupPlan)
+deepATR        = input.float(1.12, "Deep Add Distance ATR", minval=0.40, maxval=5.0, step=0.05, group=groupPlan)
+entryZoneATR   = input.float(0.15, "Entry Zone ATR", minval=0.01, maxval=1.0, step=0.01, group=groupPlan)
+tp1ATR         = input.float(0.48, "TP1 ATR Realistic", minval=0.10, maxval=3.0, step=0.05, group=groupPlan)
+tp2ATR         = input.float(0.88, "TP2 ATR Realistic", minval=0.20, maxval=5.0, step=0.05, group=groupPlan)
+tp3ATR         = input.float(1.35, "TP3 ATR Optional", minval=0.30, maxval=8.0, step=0.05, group=groupPlan)
+tpStepMinATR   = input.float(0.22, "Min Distance Between TP ATR", minval=0.05, maxval=2.0, step=0.01, group=groupPlan)
+maxTP1ATR       = input.float(0.95, "PRO: Max TP1 ATR Cap", minval=0.20, maxval=5.0, step=0.05, group=groupPlan)
+maxTP2ATR       = input.float(1.45, "PRO: Max TP2 ATR Cap", minval=0.30, maxval=8.0, step=0.05, group=groupPlan)
+maxTP3ATR       = input.float(2.10, "PRO: Max TP3 ATR Cap", minval=0.50, maxval=12.0, step=0.05, group=groupPlan)
+useLiquidityTP = input.bool(true, "Cap TP by Daily/Weekly Liquidity", group=groupPlan)
+useSessionReachableEW = input.bool(true, "PRO: Session-Reachable EW1/EW2/EW3", group=groupPlan)
+ewMomentumEWMode = input.bool(true, "PRO: Micro Pullback EW for Strong Session Move", group=groupPlan)
+ewMicro1ATR = input.float(0.08, "EW Micro 1 ATR", minval=0.02, maxval=1.00, step=0.01, group=groupPlan)
+ewMicro2ATR = input.float(0.20, "EW Micro 2 ATR", minval=0.05, maxval=1.50, step=0.01, group=groupPlan)
+ewMicro3ATR = input.float(0.36, "EW Micro 3 ATR", minval=0.10, maxval=2.00, step=0.01, group=groupPlan)
+ewSessionOpenBufferATR = input.float(0.05, "EW Session Open Buffer ATR", minval=0.00, maxval=1.00, step=0.01, group=groupPlan)
+
+
+trapScoreThr      = input.int(60, "Trap Score Threshold", minval=0, maxval=100, group=groupProtect)
+trapVolZThr       = input.float(2.0, "Trap Volume Z", minval=0.5, maxval=6.0, step=0.1, group=groupProtect)
+wickATRTrap       = input.float(0.70, "Wick Trap ATR", minval=0.10, maxval=3.0, step=0.05, group=groupProtect)
+slStructureLookback = input.int(20, "SL Structure Lookback", minval=5, maxval=100, group=groupProtect)
+minSLDistanceATR  = input.float(0.50, "Min SL Distance ATR", minval=0.10, maxval=5.0, step=0.05, group=groupProtect)
+maxSLDistanceATR  = input.float(3.20, "Max SL Distance ATR", minval=0.80, maxval=10.0, step=0.10, group=groupProtect)
+slAsiaATR         = input.float(0.15, "Extra SL Asia ATR", minval=0.0, maxval=2.0, step=0.05, group=groupProtect)
+slEuropeATR       = input.float(0.22, "Extra SL Europe ATR", minval=0.0, maxval=2.0, step=0.05, group=groupProtect)
+slUSAATR          = input.float(0.30, "Extra SL USA ATR", minval=0.0, maxval=2.0, step=0.05, group=groupProtect)
+slTrapExtraATR    = input.float(0.30, "Extra SL Trap ATR", minval=0.0, maxval=2.0, step=0.05, group=groupProtect)
+slWickExtraATR    = input.float(0.20, "Extra SL Wick ATR", minval=0.0, maxval=2.0, step=0.05, group=groupProtect)
+slVolExtraATR     = input.float(0.25, "Extra SL Volatility ATR", minval=0.0, maxval=2.0, step=0.05, group=groupProtect)
+wickOffLookback   = input.int(6, "Wick-Off Lookback", minval=2, maxval=30, group=groupProtect)
+wickOffBufferATR  = input.float(0.45, "Wick-Off Buffer ATR", minval=0.05, maxval=2.0, step=0.05, group=groupProtect)
+
+// V61.4 Hard Guard Inputs - prevents ambiguous long/short display and blocks low-quality trades.
+useHardSidewaysNoTrade = input.bool(false, "V61.5: Keep EW/SL/TP Visible Even When No Trade", group=groupProtect)
+minRRTrade             = input.float(0.80, "V61.4: Minimum RR TP1", minval=0.30, maxval=3.00, step=0.05, group=groupProtect)
+useDeepAddKill         = input.bool(true, "V61.4: Kill Setup After EW3 / Deep Add Break", group=groupProtect)
+deepReclaimBars        = input.int(3, "V61.4: Deep Add Reclaim Bars", minval=1, maxval=10, group=groupProtect)
+useM5M15Guard          = input.bool(true, "V61.4: M5 + M15 Direction Guard", group=groupProtect)
+usePressureCluster     = input.bool(true, "V61.4: Volume Pressure Cluster Guard", group=groupProtect)
+pressureClusterBars    = input.int(8, "V61.4: Pressure Cluster Lookback", minval=4, maxval=20, group=groupProtect)
+pressureClusterMin     = input.int(3, "V61.4: Minimum Pressure Candles", minval=2, maxval=10, group=groupProtect)
+pressureVolRatio       = input.float(1.15, "V61.4: Pressure Volume Ratio", minval=0.50, maxval=5.00, step=0.05, group=groupProtect)
+
+// V61.6 HARD EXECUTION FILTER - accuracy, EW quality, TP probability, SL rejection, shock/trap freeze.
+useMicroTrendOverride = input.bool(true, "V61.6: Micro Trend Override M1", group=groupProtect)
+microTrendBars        = input.int(5, "V61.6: Micro Trend Candle Count", minval=3, maxval=12, group=groupProtect)
+microTrendMinBars     = input.int(3, "V61.6: Micro Trend Min Direction Candles", minval=2, maxval=8, group=groupProtect)
+minPullbackATR        = input.float(0.18, "V61.6: Minimum Pullback ATR for EW", minval=0.05, maxval=1.00, step=0.01, group=groupProtect)
+minEntryQuality       = input.int(2, "V61.6: Min EW Quality for Entry", minval=1, maxval=4, group=groupProtect)
+useStrongReclaim      = input.bool(true, "V61.6: Require Strong EW Reclaim", group=groupProtect)
+minReclaimVolRatio    = input.float(0.85, "V61.6: Min Reclaim Volume Ratio", minval=0.10, maxval=3.00, step=0.05, group=groupProtect)
+minTP1Prob            = input.int(60, "V61.6: Minimum TP1 Probability", minval=1, maxval=100, group=groupProtect)
+useLocalLiquidityTPCap = input.bool(true, "V61.6: Cap TP by Local 20/50 Liquidity", group=groupProtect)
+useDynamicMaxSLReject = input.bool(true, "V61.6: Reject Setup if SL Too Wide", group=groupProtect)
+maxSLAsiaATR          = input.float(1.60, "V61.6: Max SL ATR Asia", minval=0.50, maxval=5.00, step=0.05, group=groupProtect)
+maxSLEuropeATR        = input.float(1.90, "V61.6: Max SL ATR Europe", minval=0.50, maxval=5.00, step=0.05, group=groupProtect)
+maxSLUSAATR           = input.float(2.20, "V61.6: Max SL ATR USA", minval=0.50, maxval=5.00, step=0.05, group=groupProtect)
+useStealthTrap        = input.bool(true, "V61.6: Stealth Distribution/Accumulation Guard", group=groupProtect)
+useShockFreeze        = input.bool(true, "V61.6: Shock / Liquidation Freeze", group=groupProtect)
+shockFreezeBars       = input.int(5, "V61.6: Shock Freeze Bars", minval=1, maxval=20, group=groupProtect)
+shockRangeATR         = input.float(2.50, "V61.6: Shock Range ATR", minval=1.00, maxval=8.00, step=0.10, group=groupProtect)
+shockBodyATR          = input.float(1.40, "V61.6: Shock Body ATR", minval=0.50, maxval=5.00, step=0.10, group=groupProtect)
+
+// V61.7 TOTAL GUARD - direction accuracy, target clearance, adaptive cooldown, anti-chase.
+useConsensusDirection = input.bool(true, "V61.7: M1-M5-M15 Consensus Direction", group=groupProtect)
+consensusScoreGap     = input.int(12, "V61.7: Min Consensus Edge", minval=0, maxval=60, group=groupProtect)
+flipConfirmBars       = input.int(2, "V61.7: Trend Flip Confirm Bars", minval=1, maxval=5, group=groupProtect)
+useAdaptiveTrapCooldown = input.bool(true, "V61.7: Adaptive Trap Cooldown", group=groupProtect)
+useTwoBarSweepConfirm = input.bool(true, "V61.7: Two-Bar Sweep Confirmation", group=groupProtect)
+useTargetBlockSR      = input.bool(true, "V61.7: Block TP Behind Strong S/R", group=groupProtect)
+targetClearATR        = input.float(0.08, "V61.7: TP Clear Buffer ATR", minval=0.00, maxval=1.00, step=0.01, group=groupProtect)
+noChaseTP1ATR         = input.float(0.20, "V61.7: No Chase Near TP1 ATR", minval=0.02, maxval=1.50, step=0.01, group=groupProtect)
+minTP2Prob            = input.int(42, "V61.7: Minimum TP2 Probability", minval=1, maxval=100, group=groupProtect)
+minStructureEdge      = input.int(8, "V61.7: Min Structure Edge", minval=0, maxval=40, group=groupProtect)
+
+// V61.8 LIQUIDITY-FLOW TP ADAPTER - only adjusts TP1/TP2/TP3 and execution guard in thin flow.
+useFlowLiquidityTP     = input.bool(true, "V61.8: Adaptive TP by Flow/Liquidity", group=groupProtect)
+flowLookback           = input.int(34, "V61.8: Flow Lookback", minval=10, maxval=200, group=groupProtect)
+lowFlowVolRatio        = input.float(0.78, "V61.8: Low Flow Volume Ratio", minval=0.10, maxval=2.00, step=0.01, group=groupProtect)
+highFlowVolRatio       = input.float(1.35, "V61.8: High Flow Volume Ratio", minval=0.50, maxval=5.00, step=0.05, group=groupProtect)
+lowFlowAtrRatio        = input.float(0.82, "V61.8: Low Flow ATR Ratio", minval=0.10, maxval=2.00, step=0.01, group=groupProtect)
+highFlowAtrRatio       = input.float(1.18, "V61.8: High Flow ATR Ratio", minval=0.50, maxval=4.00, step=0.01, group=groupProtect)
+lowLiqTP1MaxATR        = input.float(0.26, "V61.8: Low Liquidity Max TP1 ATR", minval=0.12, maxval=1.50, step=0.01, group=groupProtect)
+lowLiqTP2MaxATR        = input.float(0.43, "V61.8: Low Liquidity Max TP2 ATR", minval=0.20, maxval=2.00, step=0.01, group=groupProtect)
+lowLiqTP3MaxATR        = input.float(0.62, "V61.8: Low Liquidity Max TP3 ATR", minval=0.30, maxval=3.00, step=0.01, group=groupProtect)
+midLiqTP1MaxATR        = input.float(0.38, "V61.8: Medium Liquidity Max TP1 ATR", minval=0.15, maxval=2.00, step=0.01, group=groupProtect)
+midLiqTP2MaxATR        = input.float(0.68, "V61.8: Medium Liquidity Max TP2 ATR", minval=0.25, maxval=3.00, step=0.01, group=groupProtect)
+midLiqTP3MaxATR        = input.float(0.95, "V61.8: Medium Liquidity Max TP3 ATR", minval=0.35, maxval=4.00, step=0.01, group=groupProtect)
+lowLiqMinStepATR       = input.float(0.14, "V61.8: Low Liquidity Min TP Step ATR", minval=0.05, maxval=0.50, step=0.01, group=groupProtect)
+flowTrapWickRatio      = input.float(0.58, "V61.8: Thin-Flow Wick Trap Ratio", minval=0.20, maxval=0.95, step=0.01, group=groupProtect)
+lowFlowProbPenalty     = input.int(14, "V61.8: Low Flow TP Probability Penalty", minval=0, maxval=50, group=groupProtect)
+
+// V63.0 GOLD TOKEN / RWA ADAPTIVE ENGINE - designed for PAXG and XAUT behavior.
+// PAXG/XAUT are crypto instruments, but price behavior follows spot gold much more than speculative crypto tokens.
+// Internal variable names keep the old alt* prefix to preserve downstream compatibility.
+useGoldEngine       = input.bool(true, "V63: Use GOLD PAXG/XAUT Adaptive Engine", group=groupAlt)
+altProfile             = input.string("AUTO", "V63: Gold Token Profile", options=["AUTO", "PAXG/XAUT MAJOR", "XAUUSD PROXY", "THIN EXCHANGE", "NEWS EVENT"], group=groupAlt)
+altLTFWeight           = input.float(0.88, "V63: Gold LTF Direction Weight", minval=0.50, maxval=1.60, step=0.05, group=groupAlt)
+altHTFRelax            = input.float(0.18, "V63: Gold HTF Conflict Relax", minval=0.00, maxval=0.55, step=0.05, group=groupAlt)
+altEWVolCompress       = input.float(0.86, "V63: EW Compression in Gold Volatility", minval=0.55, maxval=1.00, step=0.01, group=groupAlt)
+altEWThinCompress      = input.float(0.90, "V63: EW Compression in Thin Token Flow", minval=0.55, maxval=1.00, step=0.01, group=groupAlt)
+altTPWildCompress      = input.float(0.88, "V63: TP Compression in Gold News Vol", minval=0.55, maxval=1.00, step=0.01, group=groupAlt)
+altTPThinCompress      = input.float(0.82, "V63: TP Compression in Thin Token Flow", minval=0.50, maxval=1.00, step=0.01, group=groupAlt)
+altSLWickBufferATR     = input.float(0.18, "V63: Extra SL Gold Wick Buffer ATR", minval=0.00, maxval=1.20, step=0.01, group=groupAlt)
+altSLVolBufferATR      = input.float(0.14, "V63: Extra SL Gold News Buffer ATR", minval=0.00, maxval=1.20, step=0.01, group=groupAlt)
+altTrapSensitivity     = input.float(1.08, "V63: Gold Trap Sensitivity", minval=0.70, maxval=1.80, step=0.05, group=groupAlt)
+altMinBreakBodyATR     = input.float(0.30, "V63: Min Clean Gold Break Body ATR", minval=0.08, maxval=1.20, step=0.01, group=groupAlt)
+altMaxChaseATR         = input.float(0.12, "V63: Max Chase Distance to TP1 ATR", minval=0.03, maxval=0.80, step=0.01, group=groupAlt)
+altChaosNoTrade        = input.bool(true, "V63: No Trade During Gold News/Wick Chaos", group=groupAlt)
+goldProxySymbol        = input.symbol("OANDA:XAUUSD", "V63: Gold Proxy Symbol", group=groupAlt)
+useGoldProxyFilter     = input.bool(true, "V63: Use XAUUSD Proxy Direction Filter", group=groupAlt)
+goldProxyWeight        = input.float(9.0, "V63: XAUUSD Proxy Score Weight", minval=0.0, maxval=20.0, step=0.5, group=groupAlt)
+goldSessionBiasMode    = input.bool(true, "V63: London/USA Session Bias Adjustment", group=groupAlt)
+goldNewsCaution        = input.bool(true, "V63: Extra Caution During USA Shock Candles", group=groupAlt)
+
+
+//==================================================
+// PRO SMC / STRUCTURE UPGRADE INPUTS - STAGED ADDITION
+//==================================================
+useSMCUpgrade          = input.bool(true, "Use PRO SMC Upgrade", group=groupSMC)
+useRealBOSCHOCH        = input.bool(true, "Stage 1: Real BOS/CHOCH Engine", group=groupSMC)
+useSwingValidation     = input.bool(true, "Stage 1: Swing Structure Validation", group=groupSMC)
+useLiquidityMap        = input.bool(true, "Stage 2: Liquidity Map Engine", group=groupSMC)
+useSupplyDemand        = input.bool(true, "Stage 2: Supply-Demand / OB Engine", group=groupSMC)
+useRegimeClassifier    = input.bool(true, "Stage 1: Regime Classifier", group=groupSMC)
+useContDistribution    = input.bool(true, "Stage 2: Continuation vs Distribution", group=groupSMC)
+useMomentumDecay       = input.bool(true, "Stage 1: Momentum Decay Detector", group=groupSMC)
+useDynamicTPScaling    = input.bool(true, "Stage 3: Dynamic TP Scaling", group=groupSMC)
+useSmartInvalidation   = input.bool(true, "Stage 3: Smart Trend Invalidation", group=groupSMC)
+smcPivotLeft           = input.int(3, "SMC Pivot Left", minval=1, maxval=20, group=groupSMC)
+smcPivotRight          = input.int(3, "SMC Pivot Right", minval=1, maxval=20, group=groupSMC)
+bosCloseBufferATR      = input.float(0.08, "BOS Close Buffer ATR", minval=0.00, maxval=1.00, step=0.01, group=groupSMC)
+chochCloseBufferATR    = input.float(0.06, "CHOCH Close Buffer ATR", minval=0.00, maxval=1.00, step=0.01, group=groupSMC)
+minSwingDistanceATR    = input.float(0.45, "Minimum Valid Swing Distance ATR", minval=0.05, maxval=5.00, step=0.05, group=groupSMC)
+liquidityEqualATR      = input.float(0.18, "Equal High/Low Tolerance ATR", minval=0.03, maxval=1.50, step=0.01, group=groupSMC)
+obDisplacementATR      = input.float(0.65, "Orderblock Displacement ATR", minval=0.20, maxval=3.00, step=0.05, group=groupSMC)
+distributionRejectBars = input.int(5, "Distribution Rejection Bars", minval=2, maxval=30, group=groupSMC)
+momentumDecayBars      = input.int(5, "Momentum Decay Lookback", minval=2, maxval=30, group=groupSMC)
+
+showPanel = input.bool(true, "Show Panel", group=groupUI)
+displayMode = input.string("CLEAN", "Display Mode", options=["CLEAN", "PRO", "DEBUG"], group=groupUI)
+showLines = input.bool(true, "Show Lines", group=groupUI)
+showMarkers = input.bool(true, "Show Signal Markers", group=groupUI)
+showBOSCHOCHLabels = input.bool(true, "Show BOS/CHOCH Labels", group=groupUI)
+showSRLevels = input.bool(true, "Show Explicit Support/Resistance", group=groupUI)
+showOBBoxes = input.bool(true, "Show Order Block Boxes", group=groupUI)
+srClusterATR = input.float(0.35, "S/R Cluster Tolerance ATR", minval=0.05, maxval=2.00, step=0.05, group=groupSMC)
+srNearATR = input.float(0.45, "Near S/R Distance ATR", minval=0.05, maxval=3.00, step=0.05, group=groupSMC)
+obExtendBars = input.int(80, "OB Box Extend Bars", minval=10, maxval=500, group=groupSMC)
+obValidationVolRatio = input.float(0.90, "OB Validation Volume Ratio", minval=0.10, maxval=5.00, step=0.05, group=groupSMC)
+
+//==================================================
+// FUNCTIONS
+//==================================================
+f_clamp(x, lo, hi) => math.max(lo, math.min(x, hi))
+f_fmt(x) => str.tostring(x, format.mintick)
+f_fmt_safe(x) => na(x) ? "-" : str.tostring(x, format.mintick)
+f_bias(c, e20, e50) => c > e20 and e20 > e50 ? "BELI" : c < e20 and e20 < e50 ? "JUAL" : "SIDEWAYS"
+f_bias_score(b) => b == "BELI" ? 1 : b == "JUAL" ? -1 : 0
+f_bias_num(c, e20, e50) => c > e20 and e20 > e50 ? 1 : c < e20 and e20 < e50 ? -1 : 0
+f_reach_long(rawLevel, price, atrVal, minATR, maxATR) =>
+    dist = atrVal > 0.0 ? (price - rawLevel) / atrVal : minATR
+    price - atrVal * f_clamp(dist, minATR, maxATR)
+f_reach_short(rawLevel, price, atrVal, minATR, maxATR) =>
+    dist = atrVal > 0.0 ? (rawLevel - price) / atrVal : minATR
+    price + atrVal * f_clamp(dist, minATR, maxATR)
+f_cap_long(level, base, atrVal, maxATR) => math.min(level, base + atrVal * maxATR)
+f_cap_short(level, base, atrVal, maxATR) => math.max(level, base - atrVal * maxATR)
+f_session_extra(sess) => sess == "ASIA" ? slAsiaATR : sess == "EROPA" ? slEuropeATR : slUSAATR
+f_session_from_minutes(tMin) => tMin >= 420 and tMin < 900 ? "ASIA" : tMin >= 900 and tMin < 1230 ? "EROPA" : "USA"
+f_session_from_ts(ts) =>
+    int _h = hour(ts, WIB)
+    int _m = minute(ts, WIB)
+    f_session_from_minutes(_h * 60 + _m)
+f_session_time_range(sess) => sess == "ASIA" ? "07:00-14:59 WIB" : sess == "EROPA" ? "15:00-20:29 WIB" : "20:30-02:59 WIB"
+f_long_sl(baseStop, deepAdd, swingLow, vwapRef, emaRef, atrVal, sess, trapNow, coolNow, volShockNow, lowerWick) =>
+    sessPad = atrVal * f_session_extra(sess)
+    trapPad = trapNow or coolNow ? atrVal * slTrapExtraATR : 0.0
+    wickPad = lowerWick >= atrVal * wickATRTrap ? atrVal * slWickExtraATR : 0.0
+    volPad  = volShockNow ? atrVal * slVolExtraATR : 0.0
+    pad = sessPad + trapPad + wickPad + volPad
+    structStop = math.min(swingLow - pad, math.min(vwapRef, emaRef) - pad * 0.50)
+    deepStop = deepAdd - atrVal * (minSLDistanceATR + f_session_extra(sess))
+    math.min(baseStop, math.min(structStop, deepStop))
+f_short_sl(baseStop, deepAdd, swingHigh, vwapRef, emaRef, atrVal, sess, trapNow, coolNow, volShockNow, upperWick) =>
+    sessPad = atrVal * f_session_extra(sess)
+    trapPad = trapNow or coolNow ? atrVal * slTrapExtraATR : 0.0
+    wickPad = upperWick >= atrVal * wickATRTrap ? atrVal * slWickExtraATR : 0.0
+    volPad  = volShockNow ? atrVal * slVolExtraATR : 0.0
+    pad = sessPad + trapPad + wickPad + volPad
+    structStop = math.max(swingHigh + pad, math.max(vwapRef, emaRef) + pad * 0.50)
+    deepStop = deepAdd + atrVal * (minSLDistanceATR + f_session_extra(sess))
+    math.max(baseStop, math.max(structStop, deepStop))
+f_long_tp_fix(tpRaw, base, prev, atrVal) => math.max(tpRaw, math.max(base + atrVal * tpStepMinATR, prev + atrVal * tpStepMinATR))
+f_short_tp_fix(tpRaw, base, prev, atrVal) => math.min(tpRaw, math.min(base - atrVal * tpStepMinATR, prev - atrVal * tpStepMinATR))
+f_long_tp_flow(tpRaw, base, prev, atrVal, maxDistATR, minStepATR) => math.max(math.min(tpRaw, base + atrVal * maxDistATR), math.max(base + atrVal * minStepATR, prev + atrVal * minStepATR))
+f_short_tp_flow(tpRaw, base, prev, atrVal, maxDistATR, minStepATR) => math.min(math.max(tpRaw, base - atrVal * maxDistATR), math.min(base - atrVal * minStepATR, prev - atrVal * minStepATR))
+f_bool_text(x) => x ? "OK" : "NO"
+f_prob_score(conf, distAtr, trapVal, sidewaysNow, shockNow, adxVal) =>
+    int(math.round(f_clamp(conf - math.max(distAtr - 0.35, 0.0) * 18.0 - trapVal * 0.25 + (adxVal >= 20 ? 8.0 : -5.0) - (sidewaysNow ? 8.0 : 0.0) - (shockNow ? 30.0 : 0.0), 0.0, 100.0)))
+f_quality_txt(q) => q >= 4 ? "DEEP RECLAIM" : q >= 3 ? "BEST" : q >= 2 ? "VALID" : q >= 1 ? "WATCH" : "MAP"
+f_safe_tf_millis() =>
+    int sec = timeframe.in_seconds(timeframe.period)
+    int safeSec = na(sec) or sec <= 0 ? 3600 : sec
+    safeSec * 1000
+
+
+//==================================================
+// SESSION ENGINE - WIB SAFE FOR ALL TIMEFRAMES
+//==================================================
+// Per-bar session is used for historical calculations. Live/session display uses timenow on the last bar,
+// so HTF charts (4H/1D/1W/1M) do not show a stale session label from the candle open.
+hW = hour(time, WIB)
+mW = minute(time, WIB)
+tW = hW * 60 + mW
+sessBar = f_session_from_minutes(tW)
+hNowW = hour(timenow, WIB)
+mNowW = minute(timenow, WIB)
+tNowW = hNowW * 60 + mNowW
+sessLive = f_session_from_minutes(tNowW)
+sess = barstate.islast ? sessLive : sessBar
+sessPanelText = sessLive + " | " + f_session_time_range(sessLive)
+sessCalc = sessBar
+sessTPFactor = sess == "ASIA" ? 0.82 : sess == "EROPA" ? 0.92 : 1.00
+
+// Historical session anchor used only for EW reachability.
+// Panel session label still uses sessLive/timenow, so HTF display remains correct.
+newSessionBar = bar_index == 0 ? true : sessCalc != sessCalc[1]
+var float sessOpenAnchor = na
+var float sessHighAnchor = na
+var float sessLowAnchor = na
+var int sessBarCount = 0
+if newSessionBar or na(sessOpenAnchor)
+    sessOpenAnchor := open
+    sessHighAnchor := high
+    sessLowAnchor := low
+    sessBarCount := 1
+else
+    sessHighAnchor := math.max(sessHighAnchor, high)
+    sessLowAnchor := math.min(sessLowAnchor, low)
+    sessBarCount += 1
+
+//==================================================
+// CORE SERIES
+//==================================================
+atr = ta.atr(atrLen)
+emaFast = ta.ema(close, emaFastLen)
+emaSlow = ta.ema(close, emaSlowLen)
+emaTrend = ta.ema(close, emaTrendLen)
+rsi = ta.rsi(close, rsiLen)
+[diPlus, diMinus, adx] = ta.dmi(adxLen, adxSmooth)
+[macdLine, macdSig, macdHist] = ta.macd(close, macdFast, macdSlow, macdSignal)
+vwapVal = ta.vwap(hlc3)
+volSMA = ta.sma(volume, volLen)
+volSD = ta.stdev(volume, volLen)
+volZRaw = volSD == 0.0 ? 0.0 : (volume - volSMA) / volSD
+volRatioRaw = volSMA > 0.0 ? volume / volSMA : 1.0
+// Full session-normalized volume engine: Asia, Europe, and USA have separate adaptive baselines.
+// This prevents normal USA volume from being mislabeled as extreme and prevents Asian-session spikes from being understated.
+alphaSessVol = 2.0 / (sessVolLen + 1.0)
+var float asiaVolEma = na
+var float europeVolEma = na
+var float usaVolEma = na
+var float asiaDevEma = na
+var float europeDevEma = na
+var float usaDevEma = na
+if sessCalc == "ASIA"
+    asiaVolEma := na(asiaVolEma) ? volume : asiaVolEma + alphaSessVol * (volume - asiaVolEma)
+    asiaDevEma := na(asiaDevEma) ? math.abs(volume - asiaVolEma) : asiaDevEma + alphaSessVol * (math.abs(volume - asiaVolEma) - asiaDevEma)
+else if sessCalc == "EROPA"
+    europeVolEma := na(europeVolEma) ? volume : europeVolEma + alphaSessVol * (volume - europeVolEma)
+    europeDevEma := na(europeDevEma) ? math.abs(volume - europeVolEma) : europeDevEma + alphaSessVol * (math.abs(volume - europeVolEma) - europeDevEma)
+else
+    usaVolEma := na(usaVolEma) ? volume : usaVolEma + alphaSessVol * (volume - usaVolEma)
+    usaDevEma := na(usaDevEma) ? math.abs(volume - usaVolEma) : usaDevEma + alphaSessVol * (math.abs(volume - usaVolEma) - usaDevEma)
+sessVolBaseRaw = sessCalc == "ASIA" ? asiaVolEma : sessCalc == "EROPA" ? europeVolEma : usaVolEma
+sessVolDevRaw = sessCalc == "ASIA" ? asiaDevEma : sessCalc == "EROPA" ? europeDevEma : usaDevEma
+sessVolBase = nz(sessVolBaseRaw, volSMA)
+sessVolDev = math.max(nz(sessVolDevRaw, volSD), math.max(sessVolBase * 0.05, 1.0))
+sessVolZ = (volume - sessVolBase) / sessVolDev
+sessVolRatio = sessVolBase > 0.0 ? volume / sessVolBase : volRatioRaw
+volZ = useSessionNormalizedVolume ? sessVolZ : volZRaw
+volRatio = useSessionNormalizedVolume ? sessVolRatio : volRatioRaw
+range10 = ta.highest(high, 10) - ta.lowest(low, 10)
+rangeMed = ta.sma(high - low, 20)
+rangeAtr = atr > 0.0 ? range10 / atr : 0.0
+candleRange = high - low
+candleBody = math.abs(close - open)
+bodyHigh = math.max(open, close)
+bodyLow = math.min(open, close)
+upperWick = high - bodyHigh
+lowerWick = bodyLow - low
+clv = candleRange == 0.0 ? 0.5 : (close - low) / candleRange
+wickRatio = candleRange > 0.0 ? math.max(upperWick, lowerWick) / candleRange : 0.0
+bodyRatio = candleRange > 0.0 ? candleBody / candleRange : 0.0
+rangeShock = high - low >= rangeMed * 2.0
+volShock = rangeShock or volZ >= (useSessionNormalizedVolume ? sessVolShockZ : trapVolZThr) or wickRatio >= 0.55
+
+// V61.8 Flow/Liquidity Engine. This is deliberately separated from EW logic.
+// It reads session-normalized volume, ATR expansion/compression, candle range, ADX, and wick behavior,
+// then lets TP1/TP2/TP3 adapt automatically in thin, normal, and high-flow conditions.
+atrFlowBase = ta.sma(atr, flowLookback)
+rangeFlowBase = ta.sma(candleRange, flowLookback)
+atrFlowRatio = atrFlowBase > 0.0 ? atr / atrFlowBase : 1.0
+rangeFlowRatio = rangeFlowBase > 0.0 ? candleRange / rangeFlowBase : 1.0
+lowFlowCore = volRatio <= lowFlowVolRatio and atrFlowRatio <= lowFlowAtrRatio and adx < 18
+highFlowCore = volRatio >= highFlowVolRatio and atrFlowRatio >= highFlowAtrRatio and rangeFlowRatio >= 1.05 and adx >= 18
+thinFlowWickRisk = lowFlowCore and wickRatio >= flowTrapWickRatio
+flowScore = int(math.round(f_clamp(50.0 + (volRatio - 1.0) * 28.0 + (atrFlowRatio - 1.0) * 24.0 + (rangeFlowRatio - 1.0) * 14.0 + (adx >= 22 ? 8.0 : adx < 15 ? -8.0 : 0.0) - (thinFlowWickRisk ? 18.0 : 0.0), 0.0, 100.0)))
+flowState = not useFlowLiquidityTP ? "BASE" : lowFlowCore ? "RENDAH" : highFlowCore and not thinFlowWickRisk ? "TINGGI" : "SEDANG"
+flowPanelText = flowState + " | V " + str.tostring(volRatio, "#.##") + "x | ATR " + str.tostring(atrFlowRatio, "#.##") + "x"
+// V61.9: Practical trading interpretation for panel execution.
+flowInterpretBase = not useFlowLiquidityTP ? "Normal/sedang, TP harus realistis" : flowState == "RENDAH" ? "Sepi, rawan fake move" : flowState == "TINGGI" ? "Aktif, TP lebih mungkin tercapai" : "Normal/sedang, TP harus realistis"
+flowTP1MaxATR = flowState == "RENDAH" ? lowLiqTP1MaxATR : flowState == "SEDANG" ? midLiqTP1MaxATR : maxTP1ATR
+flowTP2MaxATR = flowState == "RENDAH" ? lowLiqTP2MaxATR : flowState == "SEDANG" ? midLiqTP2MaxATR : maxTP2ATR
+flowTP3MaxATR = flowState == "RENDAH" ? lowLiqTP3MaxATR : flowState == "SEDANG" ? midLiqTP3MaxATR : maxTP3ATR
+flowMinStepATR = flowState == "RENDAH" ? math.min(tpStepMinATR, lowLiqMinStepATR) : tpStepMinATR
+flowProbPenalty = useFlowLiquidityTP ? (flowState == "RENDAH" ? lowFlowProbPenalty : flowState == "SEDANG" ? 4 : volShock and not highFlowCore ? 10 : 0) : 0
+flowTrapBlockBase = useFlowLiquidityTP and thinFlowWickRisk and volShock
+
+//==================================================
+// V63.0 GOLD TOKEN / RWA ADAPTIVE REGIME
+//==================================================
+// Gold tokens are crypto-traded assets, but their structure is anchored to gold.
+// This layer keeps EW/TP realistic, SL wick-aware, and direction aligned with XAUUSD proxy when enabled.
+atrPct = close > 0.0 ? atr / close * 100.0 : 0.0
+atrPctBase = ta.sma(atrPct, 100)
+atrPctRatio = atrPctBase > 0.0 ? atrPct / atrPctBase : 1.0
+goldTokenVolatile = atrPct >= 0.42 or atrPctRatio >= 1.22 or atrFlowRatio >= 1.20 or rangeFlowRatio >= 1.25
+goldTokenThin = flowState == "RENDAH" or volRatio <= lowFlowVolRatio * 1.05
+goldNewsShock = goldNewsCaution and sess == "USA" and (rangeFlowRatio >= 1.45 or candleRange >= atr * 1.65) and volShock
+goldSessionActive = goldSessionBiasMode and (sess == "EROPA" or sess == "USA")
+goldSessionQuiet = goldSessionBiasMode and sess == "ASIA" and flowState != "TINGGI"
+altAutoWild = goldTokenVolatile or goldNewsShock
+altAutoThin = goldTokenThin
+altAutoMeme = goldNewsShock and goldTokenThin and wickRatio >= 0.46
+altProfileResolved = altProfile == "AUTO" ? (goldNewsShock ? "NEWS EVENT" : goldTokenThin ? "THIN EXCHANGE" : "PAXG/XAUT MAJOR") : altProfile
+altProfileMult = altProfileResolved == "PAXG/XAUT MAJOR" ? 0.85 : altProfileResolved == "XAUUSD PROXY" ? 0.80 : altProfileResolved == "THIN EXCHANGE" ? 1.05 : 1.20
+altWildVol = useGoldEngine and (goldTokenVolatile or atrFlowRatio >= 1.16 * altProfileMult or rangeFlowRatio >= 1.18 * altProfileMult or goldNewsShock)
+altThinFlow = useGoldEngine and (goldTokenThin or flowState == "RENDAH")
+altWickChaos = useGoldEngine and wickRatio >= f_clamp(0.50 / altProfileMult, 0.38, 0.58) and candleRange >= atr * 0.62
+altFakeImpulse = useGoldEngine and volShock and altWickChaos and bodyRatio <= 0.38
+altCleanImpulse = useGoldEngine and candleBody >= atr * altMinBreakBodyATR and bodyRatio >= 0.44 and volRatio >= math.max(sessVolBreakoutRatio, 1.00) and not altFakeImpulse
+altChaos = useGoldEngine and altChaosNoTrade and ((altWickChaos and altThinFlow) or (altFakeImpulse and not altCleanImpulse) or goldNewsShock or (atrFlowRatio >= 1.55 and wickRatio >= 0.42))
+altEWFactor = not useGoldEngine ? 1.0 : f_clamp((altWildVol ? altEWVolCompress : 1.0) * (altThinFlow ? altEWThinCompress : 1.0) * (goldSessionQuiet ? 0.92 : sess == "EROPA" ? 0.98 : sess == "USA" ? 0.95 : 1.0), 0.58, 1.05)
+altTPFactor = not useGoldEngine ? 1.0 : f_clamp((altWildVol ? altTPWildCompress : 1.0) * (altThinFlow ? altTPThinCompress : 1.0) * (goldSessionQuiet ? 0.86 : 1.0) * (altCleanImpulse and goldSessionActive and flowState == "TINGGI" ? 1.05 : 1.0), 0.55, 1.08)
+altSLFactor = not useGoldEngine ? 1.0 : f_clamp(1.0 + (altWickChaos ? altSLWickBufferATR : 0.0) + (altWildVol ? altSLVolBufferATR : 0.0) + (altThinFlow ? 0.06 : 0.0) + (goldNewsShock ? 0.10 : 0.0), 1.0, 1.55)
+altTrapPenalty = not useGoldEngine ? 0.0 : (altChaos ? 24.0 : altFakeImpulse ? 16.0 : altWickChaos ? 9.0 : altThinFlow ? 5.0 : 0.0) * altTrapSensitivity
+altFlowText = not useGoldEngine ? "BASE MODE" : altChaos ? "GOLD NEWS/WICK CHAOS" : altFakeImpulse ? "GOLD WICK/TRAP" : altThinFlow ? "GOLD THIN FLOW" : altWildVol ? "GOLD VOLATILE" : "GOLD NORMAL"
+emaDir = emaFast > emaSlow ? 1 : emaFast < emaSlow ? -1 : 0
+emaFlat = atr > 0.0 ? math.abs(emaFast - emaFast[5]) <= atr * 0.18 : false
+rsiMid = rsi >= 45 and rsi <= 55
+antiChop = blockChop and ((atr > 0.0 and range10 / atr < 0.75) or (emaFlat and rsiMid and wickRatio >= 0.45 and bodyRatio <= 0.45) or adx < 13)
+
+//==================================================
+// STAGE 1-3 PRO SMC ENGINE
+// Real BOS/CHOCH + swing validation + liquidity map + OB + regime + momentum decay
+//==================================================
+phSMC = ta.pivothigh(high, smcPivotLeft, smcPivotRight)
+plSMC = ta.pivotlow(low, smcPivotLeft, smcPivotRight)
+lastSwingHigh = ta.valuewhen(not na(phSMC), phSMC, 0)
+prevSwingHigh = ta.valuewhen(not na(phSMC), phSMC, 1)
+lastSwingLow  = ta.valuewhen(not na(plSMC), plSMC, 0)
+prevSwingLow  = ta.valuewhen(not na(plSMC), plSMC, 1)
+validSwingHigh = not na(lastSwingHigh) and not na(prevSwingHigh) and math.abs(lastSwingHigh - prevSwingHigh) >= atr * minSwingDistanceATR
+validSwingLow  = not na(lastSwingLow) and not na(prevSwingLow) and math.abs(lastSwingLow - prevSwingLow) >= atr * minSwingDistanceATR
+hhStructure = validSwingHigh and lastSwingHigh > prevSwingHigh
+lhStructure = validSwingHigh and lastSwingHigh < prevSwingHigh
+hlStructure = validSwingLow and lastSwingLow > prevSwingLow
+llStructure = validSwingLow and lastSwingLow < prevSwingLow
+swingBullValid = useSwingValidation ? (hhStructure and hlStructure) : true
+swingBearValid = useSwingValidation ? (lhStructure and llStructure) : true
+realBosBull = useRealBOSCHOCH and not na(lastSwingHigh) and close > lastSwingHigh + atr * bosCloseBufferATR and candleBody >= atr * 0.25
+realBosBear = useRealBOSCHOCH and not na(lastSwingLow) and close < lastSwingLow - atr * bosCloseBufferATR and candleBody >= atr * 0.25
+var int smcTrendState = 0
+chochBull = useRealBOSCHOCH and smcTrendState == -1 and not na(lastSwingHigh) and close > lastSwingHigh + atr * chochCloseBufferATR
+chochBear = useRealBOSCHOCH and smcTrendState == 1 and not na(lastSwingLow) and close < lastSwingLow - atr * chochCloseBufferATR
+if realBosBull or chochBull
+    smcTrendState := 1
+else if realBosBear or chochBear
+    smcTrendState := -1
+bosBullEvent = realBosBull and realBosBull[1] != true
+bosBearEvent = realBosBear and realBosBear[1] != true
+chochBullEvent = chochBull and chochBull[1] != true
+chochBearEvent = chochBear and chochBear[1] != true
+smcTrendText = smcTrendState == 1 ? "SMC BULL" : smcTrendState == -1 ? "SMC BEAR" : "SMC NEUTRAL"
+
+// Liquidity map: equal highs/lows and sweep/reclaim zones.
+eqHighSMC = not na(lastSwingHigh) and not na(prevSwingHigh) and math.abs(lastSwingHigh - prevSwingHigh) <= atr * liquidityEqualATR
+eqLowSMC  = not na(lastSwingLow) and not na(prevSwingLow) and math.abs(lastSwingLow - prevSwingLow) <= atr * liquidityEqualATR
+liqPoolHigh = eqHighSMC ? math.max(lastSwingHigh, prevSwingHigh) : ta.highest(high[1], 20)
+liqPoolLow  = eqLowSMC ? math.min(lastSwingLow, prevSwingLow) : ta.lowest(low[1], 20)
+liqSweepHighSMC = useLiquidityMap and high > liqPoolHigh and close < liqPoolHigh and upperWick >= atr * 0.10
+liqSweepLowSMC  = useLiquidityMap and low < liqPoolLow and close > liqPoolLow and lowerWick >= atr * 0.10
+liqBullReclaim = liqSweepLowSMC and close > open and clv >= 0.55
+liqBearReclaim = liqSweepHighSMC and close < open and clv <= 0.45
+liquidityRiskLong = liqSweepHighSMC and not liqBullReclaim
+liquidityRiskShort = liqSweepLowSMC and not liqBearReclaim
+
+// Supply-demand / orderblock engine: opposite candle before displacement, validated by BOS/CHOCH or structural break.
+// Upgrade is intentionally conservative: the original OB variables are retained so scoring, EW alignment, and panel behavior remain compatible.
+bullDisplacementSMC = close > open and candleBody >= atr * obDisplacementATR and close > high[1]
+bearDisplacementSMC = close < open and candleBody >= atr * obDisplacementATR and close < low[1]
+bullOBBreakConfirmed = realBosBull or chochBull or (not na(lastSwingHigh) and close > lastSwingHigh + atr * bosCloseBufferATR)
+bearOBBreakConfirmed = realBosBear or chochBear or (not na(lastSwingLow) and close < lastSwingLow - atr * bosCloseBufferATR)
+bullOBSource = useSupplyDemand and bullDisplacementSMC and close[1] < open[1] and bullOBBreakConfirmed and volRatio >= obValidationVolRatio
+bearOBSource = useSupplyDemand and bearDisplacementSMC and close[1] > open[1] and bearOBBreakConfirmed and volRatio >= obValidationVolRatio
+bullOBLow = ta.valuewhen(bullOBSource, low[1], 0)
+bullOBHigh = ta.valuewhen(bullOBSource, high[1], 0)
+bearOBLow = ta.valuewhen(bearOBSource, low[1], 0)
+bearOBHigh = ta.valuewhen(bearOBSource, high[1], 0)
+bullOBMid = not na(bullOBLow) and not na(bullOBHigh) ? (bullOBLow + bullOBHigh) * 0.50 : na
+bearOBMid = not na(bearOBLow) and not na(bearOBHigh) ? (bearOBLow + bearOBHigh) * 0.50 : na
+bullOBTouched = useSupplyDemand and not na(bullOBLow) and low <= bullOBHigh + atr * 0.15 and high >= bullOBLow
+bearOBTouched = useSupplyDemand and not na(bearOBHigh) and high >= bearOBLow - atr * 0.15 and low <= bearOBHigh
+bullOBInvalid = useSupplyDemand and not na(bullOBLow) and close < bullOBLow - atr * 0.12
+bearOBInvalid = useSupplyDemand and not na(bearOBHigh) and close > bearOBHigh + atr * 0.12
+bullOBMitigated = bullOBTouched and not bullOBInvalid and close >= nz(bullOBMid, bullOBLow)
+bearOBMitigated = bearOBTouched and not bearOBInvalid and close <= nz(bearOBMid, bearOBHigh)
+bullOBValid = useSupplyDemand and not na(bullOBLow) and not bullOBInvalid and bullOBTouched and (smcTrendState >= 0 or chochBull or realBosBull)
+bearOBValid = useSupplyDemand and not na(bearOBHigh) and not bearOBInvalid and bearOBTouched and (smcTrendState <= 0 or chochBear or realBosBear)
+bullOBStrength = int(math.round(f_clamp((bullOBSource ? 35.0 : 0.0) + (bullOBBreakConfirmed ? 25.0 : 0.0) + (volRatio >= obValidationVolRatio ? 20.0 : 0.0) + (bullOBMitigated ? 20.0 : 0.0) - (bullOBInvalid ? 45.0 : 0.0), 0, 100)))
+bearOBStrength = int(math.round(f_clamp((bearOBSource ? 35.0 : 0.0) + (bearOBBreakConfirmed ? 25.0 : 0.0) + (volRatio >= obValidationVolRatio ? 20.0 : 0.0) + (bearOBMitigated ? 20.0 : 0.0) - (bearOBInvalid ? 45.0 : 0.0), 0, 100)))
+
+// Regime classifier + continuation/distribution + momentum decay.
+rangeCompression = rangeAtr < 0.85 or (adx < 15 and bodyRatio <= 0.45)
+trendExpansion = adx >= 22 and rangeAtr >= 1.10 and bodyRatio >= 0.48
+rejectionHighCount = math.sum((upperWick > candleBody and high >= ta.highest(high, distributionRejectBars)[1]) ? 1 : 0, distributionRejectBars)
+rejectionLowCount  = math.sum((lowerWick > candleBody and low <= ta.lowest(low, distributionRejectBars)[1]) ? 1 : 0, distributionRejectBars)
+volumeDecay = volume < volSMA and volSMA < nz(volSMA[momentumDecayBars], volSMA)
+macdDecayLong = macdHist > 0 and macdHist < nz(macdHist[1], macdHist)
+macdDecayShort = macdHist < 0 and macdHist > nz(macdHist[1], macdHist)
+rsiDecayLong = rsi < nz(rsi[momentumDecayBars], rsi) and rsi > 50
+rsiDecayShort = rsi > nz(rsi[momentumDecayBars], rsi) and rsi < 50
+bodyDecay = candleBody < ta.sma(candleBody, momentumDecayBars) and candleBody < atr * 0.35
+momentumDecayLong = useMomentumDecay and (macdDecayLong and rsiDecayLong or volumeDecay and bodyDecay)
+momentumDecayShort = useMomentumDecay and (macdDecayShort and rsiDecayShort or volumeDecay and bodyDecay)
+distributionRisk = useContDistribution and (rejectionHighCount >= 2 or liqSweepHighSMC or momentumDecayLong) and close >= emaFast
+accumulationRisk = useContDistribution and (rejectionLowCount >= 2 or liqSweepLowSMC or momentumDecayShort) and close <= emaFast
+continuationLong = trendExpansion and smcTrendState == 1 and not distributionRisk and not momentumDecayLong
+continuationShort = trendExpansion and smcTrendState == -1 and not accumulationRisk and not momentumDecayShort
+regimeClass = not useRegimeClassifier ? "BASE" : continuationLong ? "CONT LONG" : continuationShort ? "CONT SHORT" : distributionRisk ? "DISTRIBUSI" : accumulationRisk ? "AKUMULASI" : rangeCompression ? "KOMPRESI" : trendExpansion ? "EKSPANSI" : "MIXED"
+
+// Smart invalidation: structure, OB, liquidity, and momentum invalidation combined.
+smartInvalidLong = useSmartInvalidation and (chochBear or realBosBear or bullOBInvalid or liquidityRiskLong or distributionRisk and momentumDecayLong)
+smartInvalidShort = useSmartInvalidation and (chochBull or realBosBull or bearOBInvalid or liquidityRiskShort or accumulationRisk and momentumDecayShort)
+smcLongBonus = useSMCUpgrade ? ((realBosBull or chochBull ? 16 : 0) + (swingBullValid ? 10 : 0) + (bullOBValid ? 8 : 0) + (liqBullReclaim ? 8 : 0) + (continuationLong ? 10 : 0) - (smartInvalidLong ? 24 : 0) - (distributionRisk ? 12 : 0) - (momentumDecayLong ? 8 : 0)) : 0
+smcShortBonus = useSMCUpgrade ? ((realBosBear or chochBear ? 16 : 0) + (swingBearValid ? 10 : 0) + (bearOBValid ? 8 : 0) + (liqBearReclaim ? 8 : 0) + (continuationShort ? 10 : 0) - (smartInvalidShort ? 24 : 0) - (accumulationRisk ? 12 : 0) - (momentumDecayShort ? 8 : 0)) : 0
+
+
+//==================================================
+// MTF REQUESTS
+//==================================================
+[c5, e20_5, e50_5, m5LowPrev, m5HighPrev] = request.security(sym, "5", [close, ta.ema(close, 20), ta.ema(close, 50), ta.lowest(low[1], 10), ta.highest(high[1], 10)], barmerge.gaps_off, barmerge.lookahead_off)
+[c15, e20_15, e50_15, m15LowPrev, m15HighPrev] = request.security(sym, "15", [close, ta.ema(close, 20), ta.ema(close, 50), ta.lowest(low[1], 10), ta.highest(high[1], 10)], barmerge.gaps_off, barmerge.lookahead_off)
+[c1h, e20_1h, e50_1h, vwap1h] = request.security(sym, "60", [close, ta.ema(close, 20), ta.ema(close, 50), ta.vwap(hlc3)], barmerge.gaps_off, barmerge.lookahead_off)
+[c4h, e20_4h, e50_4h] = request.security(sym, "240", [close, ta.ema(close, 20), ta.ema(close, 50)], barmerge.gaps_off, barmerge.lookahead_off)
+[dClose, dHigh, dLow, e20_1d, e50_1d, e200_1d] = request.security(sym, "D", [close, high[1], low[1], ta.ema(close, 20), ta.ema(close, 50), ta.ema(close, 200)], barmerge.gaps_off, barmerge.lookahead_off)
+[c1w, wHigh, wLow, e20_1w, e50_1w] = request.security(sym, "W", [close, high[1], low[1], ta.ema(close, 20), ta.ema(close, 50)], barmerge.gaps_off, barmerge.lookahead_off)
+[c1m, e20_1m, e50_1m] = request.security(sym, "M", [close, ta.ema(close, 20), ta.ema(close, 50)], barmerge.gaps_off, barmerge.lookahead_off)
+[cBOS4H, hh4h, ll4h, adx4h] = request.security(sym, "240", [close, ta.highest(high[1], structLookback), ta.lowest(low[1], structLookback), adx], barmerge.gaps_off, barmerge.lookahead_off)
+[cBOS1D, hh1d, ll1d, adx1d] = request.security(sym, "D", [close, ta.highest(high[1], structLookback), ta.lowest(low[1], structLookback), adx], barmerge.gaps_off, barmerge.lookahead_off)
+
+// V63.0 GOLD PROXY FILTER
+// PAXG/XAUT often track spot gold. This proxy filter prevents token-only noise from overriding XAUUSD direction.
+[goldPx, goldProxyE20, goldProxyE50] = request.security(goldProxySymbol, timeframe.period, [close, ta.ema(close, 20), ta.ema(close, 50)], barmerge.gaps_off, barmerge.lookahead_off)
+[goldProxyD1Close, goldProxyD1E20, goldProxyD1E50] = request.security(goldProxySymbol, "D", [close, ta.ema(close, 20), ta.ema(close, 50)], barmerge.gaps_off, barmerge.lookahead_off)
+goldProxyBias = f_bias(goldPx, goldProxyE20, goldProxyE50)
+goldProxyD1Bias = f_bias(goldProxyD1Close, goldProxyD1E20, goldProxyD1E50)
+goldProxyBull = goldProxyBias == "BELI" and goldProxyD1Bias != "JUAL"
+goldProxyBear = goldProxyBias == "JUAL" and goldProxyD1Bias != "BELI"
+goldProxyMixed = not goldProxyBull and not goldProxyBear
+
+//==================================================
+// EXPLICIT SUPPORT / RESISTANCE ENGINE
+// Uses the existing swing, liquidity, daily, and weekly levels, then clusters nearby levels.
+// This is visual/diagnostic and does not alter the panel or the main decision engine.
+//==================================================
+float srResistanceBase = na
+srResistanceBase := not na(lastSwingHigh) and lastSwingHigh > close ? lastSwingHigh : srResistanceBase
+srResistanceBase := not na(liqPoolHigh) and liqPoolHigh > close and (na(srResistanceBase) or liqPoolHigh < srResistanceBase) ? liqPoolHigh : srResistanceBase
+srResistanceBase := not na(dHigh) and dHigh > close and (na(srResistanceBase) or dHigh < srResistanceBase) ? dHigh : srResistanceBase
+srResistanceBase := not na(wHigh) and wHigh > close and (na(srResistanceBase) or wHigh < srResistanceBase) ? wHigh : srResistanceBase
+srResistanceBase := na(srResistanceBase) ? ta.highest(high[1], 50) : srResistanceBase
+
+float srSupportBase = na
+srSupportBase := not na(lastSwingLow) and lastSwingLow < close ? lastSwingLow : srSupportBase
+srSupportBase := not na(liqPoolLow) and liqPoolLow < close and (na(srSupportBase) or liqPoolLow > srSupportBase) ? liqPoolLow : srSupportBase
+srSupportBase := not na(dLow) and dLow < close and (na(srSupportBase) or dLow > srSupportBase) ? dLow : srSupportBase
+srSupportBase := not na(wLow) and wLow < close and (na(srSupportBase) or wLow > srSupportBase) ? wLow : srSupportBase
+srSupportBase := na(srSupportBase) ? ta.lowest(low[1], 50) : srSupportBase
+
+srTol = atr * srClusterATR
+float srResSum = srResistanceBase
+float srSupSum = srSupportBase
+float srResCount = 1.0
+float srSupCount = 1.0
+if not na(lastSwingHigh) and math.abs(lastSwingHigh - srResistanceBase) <= srTol
+    srResSum += lastSwingHigh
+    srResCount += 1.0
+if not na(liqPoolHigh) and math.abs(liqPoolHigh - srResistanceBase) <= srTol
+    srResSum += liqPoolHigh
+    srResCount += 1.0
+if not na(dHigh) and math.abs(dHigh - srResistanceBase) <= srTol
+    srResSum += dHigh
+    srResCount += 1.0
+if not na(wHigh) and math.abs(wHigh - srResistanceBase) <= srTol
+    srResSum += wHigh
+    srResCount += 1.0
+if not na(lastSwingLow) and math.abs(lastSwingLow - srSupportBase) <= srTol
+    srSupSum += lastSwingLow
+    srSupCount += 1.0
+if not na(liqPoolLow) and math.abs(liqPoolLow - srSupportBase) <= srTol
+    srSupSum += liqPoolLow
+    srSupCount += 1.0
+if not na(dLow) and math.abs(dLow - srSupportBase) <= srTol
+    srSupSum += dLow
+    srSupCount += 1.0
+if not na(wLow) and math.abs(wLow - srSupportBase) <= srTol
+    srSupSum += wLow
+    srSupCount += 1.0
+srResistance = srResSum / srResCount
+srSupport = srSupSum / srSupCount
+resTouchCount = math.sum(math.abs(high - srResistance) <= srTol ? 1 : 0, 50)
+supTouchCount = math.sum(math.abs(low - srSupport) <= srTol ? 1 : 0, 50)
+srResistanceStrength = int(math.round(f_clamp(srResCount * 14.0 + resTouchCount * 4.0 + (eqHighSMC ? 12.0 : 0.0), 0, 100)))
+srSupportStrength = int(math.round(f_clamp(srSupCount * 14.0 + supTouchCount * 4.0 + (eqLowSMC ? 12.0 : 0.0), 0, 100)))
+priceNearResistance = math.abs(close - srResistance) <= atr * srNearATR
+priceNearSupport = math.abs(close - srSupport) <= atr * srNearATR
+srStatusText = priceNearResistance ? "NEAR RESISTANCE" : priceNearSupport ? "NEAR SUPPORT" : "MID RANGE"
+
+
+//==================================================
+// SESSION
+//==================================================
+// Session variables are defined before CORE SERIES to support session-normalized volume.
+
+//==================================================
+// V55 TREND ENGINE - INTEGRATED
+//==================================================
+bias5 = f_bias(c5, e20_5, e50_5)
+bias15 = f_bias(c15, e20_15, e50_15)
+bias1h = f_bias(c1h, e20_1h, e50_1h)
+bias4h = f_bias(c4h, e20_4h, e50_4h)
+bias1d = f_bias(dClose, e20_1d, e50_1d)
+bias1w = f_bias(c1w, e20_1w, e50_1w)
+bias1m = f_bias(c1m, e20_1m, e50_1m)
+mtfScore = f_bias_score(bias15) + f_bias_score(bias1h) + f_bias_score(bias4h) + f_bias_score(bias1d) + f_bias_score(bias1w) + f_bias_score(bias1m)
+mtfDominantBias = mtfScore > 0 ? "BELI" : mtfScore < 0 ? "JUAL" : "SIDEWAYS"
+
+bosUp4h = not na(hh4h) and cBOS4H > hh4h
+bosDn4h = not na(ll4h) and cBOS4H < ll4h
+bosUp1d = not na(hh1d) and cBOS1D > hh1d
+bosDn1d = not na(ll1d) and cBOS1D < ll1d
+structureLongScore = 0.0
+structureLongScore += bosUp4h ? 28 : bias4h == "BELI" ? 16 : 0
+structureLongScore += bosUp1d ? 24 : bias1d == "BELI" ? 14 : 0
+structureLongScore += c4h > e20_4h and e20_4h >= e50_4h ? 16 : 0
+structureLongScore += dClose > e20_1d and e20_1d >= e50_1d ? 14 : 0
+structureLongScore += adx4h >= 16 or adx1d >= 14 ? 10 : 0
+structureLongScore += c15 > e20_15 and c1h > e20_1h ? 8 : 0
+structureLongScore -= bosDn4h ? 25 : 0
+structureLongScore -= bosDn1d ? 20 : 0
+structureShortScore = 0.0
+structureShortScore += bosDn4h ? 28 : bias4h == "JUAL" ? 16 : 0
+structureShortScore += bosDn1d ? 24 : bias1d == "JUAL" ? 14 : 0
+structureShortScore += c4h < e20_4h and e20_4h <= e50_4h ? 16 : 0
+structureShortScore += dClose < e20_1d and e20_1d <= e50_1d ? 14 : 0
+structureShortScore += adx4h >= 16 or adx1d >= 14 ? 10 : 0
+structureShortScore += c15 < e20_15 and c1h < e20_1h ? 8 : 0
+structureShortScore -= bosUp4h ? 25 : 0
+structureShortScore -= bosUp1d ? 20 : 0
+structureLongScore := f_clamp(structureLongScore, 0, 100)
+structureShortScore := f_clamp(structureShortScore, 0, 100)
+structureLongOK = not useStructuralTrend or structureLongScore >= minStructScore
+structureShortOK = not useStructuralTrend or structureShortScore >= minStructScore
+
+trendUp = emaFast > emaSlow and close > emaFast
+trendDown = emaFast < emaSlow and close < emaFast
+trend200LongOK = close > emaTrend and dClose > e200_1d
+trend200ShortOK = close < emaTrend and dClose < e200_1d
+macdLongOK = macdHist > 0 and macdLine > macdSig
+macdShortOK = macdHist < 0 and macdLine < macdSig
+rsiLongOK = rsi >= 50 and rsi <= 72
+rsiShortOK = rsi <= 50 and rsi >= 28
+vwapLongOK = close > vwapVal and c1h > vwap1h
+vwapShortOK = close < vwapVal and c1h < vwap1h
+
+h1ShortPressure = e20_1h < e50_1h and c1h < e20_1h
+h1LongPressure  = e20_1h > e50_1h and c1h > e20_1h
+m15Breakdown = c15 < m15LowPrev
+m15Breakout  = c15 > m15HighPrev
+m5Breakdown = c5 < m5LowPrev
+m5Breakout  = c5 > m5HighPrev
+
+// V61.6 Micro Trend Override: gives higher priority to real-time M1/M5 structure when BTC reverses fast.
+microRedCount = math.sum(close < open ? 1.0 : 0.0, microTrendBars)
+microGreenCount = math.sum(close > open ? 1.0 : 0.0, microTrendBars)
+microBearOverride = useMicroTrendOverride and close < emaFast and emaFast < emaSlow and close < vwapVal and microRedCount >= microTrendMinBars and low < ta.lowest(low[1], 8) and (bias5 != "BELI" or m5Breakdown)
+microBullOverride = useMicroTrendOverride and close > emaFast and emaFast > emaSlow and close > vwapVal and microGreenCount >= microTrendMinBars and high > ta.highest(high[1], 8) and (bias5 != "JUAL" or m5Breakout)
+
+// V61.7: M1-M5-M15 consensus score. This prevents HTF EMA bias from overpowering real-time M1 breakdown/reclaim.
+m1Bull = close > emaFast and emaFast > emaSlow and close > vwapVal and macdHist >= 0
+m1Bear = close < emaFast and emaFast < emaSlow and close < vwapVal and macdHist <= 0
+m5Bull = bias5 == "BELI" or m5Breakout
+m5Bear = bias5 == "JUAL" or m5Breakdown
+m15Bull = bias15 == "BELI" or m15Breakout
+m15Bear = bias15 == "JUAL" or m15Breakdown
+consensusLongScore = (m1Bull ? 36.0 : 0.0) + (m5Bull ? 34.0 : 0.0) + (m15Bull ? 30.0 : 0.0) + (microBullOverride ? 16.0 : 0.0)
+consensusShortScore = (m1Bear ? 36.0 : 0.0) + (m5Bear ? 34.0 : 0.0) + (m15Bear ? 30.0 : 0.0) + (microBearOverride ? 16.0 : 0.0)
+consensusEdge = consensusLongScore - consensusShortScore
+consensusLongOK = not useConsensusDirection or consensusEdge >= consensusScoreGap
+consensusShortOK = not useConsensusDirection or consensusEdge <= -consensusScoreGap
+
+strongConflictLong  = h1ShortPressure and m15Breakdown
+strongConflictShort = h1LongPressure and m15Breakout
+macroConflictLong  = bias1w == "JUAL" or bias1m == "JUAL"
+macroConflictShort = bias1w == "BELI" or bias1m == "BELI"
+
+longScore = 0.0
+longScore += bias4h == "BELI" ? 18 : bias4h == "SIDEWAYS" ? 5 : 0
+longScore += bias1d == "BELI" ? 14 : bias1d == "SIDEWAYS" ? 4 : 0
+longScore += trendUp ? 14 : 0
+longScore += trend200LongOK ? 10 : 0
+longScore += macdLongOK ? 10 : 0
+longScore += rsiLongOK ? 10 : 0
+longScore += diPlus > diMinus ? 8 : 0
+longScore += adx >= 16 and adx <= 55 ? 8 : 0
+longScore += vwapLongOK ? 10 : 0
+longScore += mtfDominantBias == "BELI" ? 12 : mtfDominantBias == "SIDEWAYS" ? 4 : 0
+longScore += structureLongOK ? 8 : -14
+longScore += smcLongBonus
+longScore -= antiChop ? 12 : 0
+longScore -= strongConflictLong ? 18 : 0
+longScore -= macroConflictLong ? 10 : 0
+longScore -= volShock ? 4 : 0
+
+shortScore = 0.0
+shortScore += bias4h == "JUAL" ? 18 : bias4h == "SIDEWAYS" ? 5 : 0
+shortScore += bias1d == "JUAL" ? 14 : bias1d == "SIDEWAYS" ? 4 : 0
+shortScore += trendDown ? 14 : 0
+shortScore += trend200ShortOK ? 10 : 0
+shortScore += macdShortOK ? 10 : 0
+shortScore += rsiShortOK ? 10 : 0
+shortScore += diMinus > diPlus ? 8 : 0
+shortScore += adx >= 16 and adx <= 55 ? 8 : 0
+shortScore += vwapShortOK ? 10 : 0
+shortScore += mtfDominantBias == "JUAL" ? 12 : mtfDominantBias == "SIDEWAYS" ? 4 : 0
+shortScore += structureShortOK ? 8 : -14
+shortScore += smcShortBonus
+shortScore -= antiChop ? 12 : 0
+shortScore -= strongConflictShort ? 18 : 0
+shortScore -= macroConflictShort ? 10 : 0
+shortScore -= volShock ? 4 : 0
+
+// V61.6: strengthen score when micro trend agrees and penalize hard when micro trend rejects the direction.
+longScore += microBullOverride ? 14 : 0
+longScore -= microBearOverride ? 18 : 0
+shortScore += microBearOverride ? 14 : 0
+shortScore -= microBullOverride ? 18 : 0
+
+// V61.7: consensus weighting. HTF remains useful, but M1-M5-M15 structure is now decisive for execution.
+longScore += useConsensusDirection ? consensusLongScore * 0.22 : 0.0
+longScore -= useConsensusDirection ? consensusShortScore * 0.18 : 0.0
+shortScore += useConsensusDirection ? consensusShortScore * 0.22 : 0.0
+shortScore -= useConsensusDirection ? consensusLongScore * 0.18 : 0.0
+
+// V63.0 GOLD direction adapter.
+// PAXG/XAUT should not flip like meme coins. LTF helps execution, but XAUUSD proxy + H1/H4/D1 remain dominant.
+altLTFLongEdge = consensusLongScore > consensusShortScore and (m1Bull or m5Bull) and (m15Bull or m15Breakout or liqBullReclaim)
+altLTFShortEdge = consensusShortScore > consensusLongScore and (m1Bear or m5Bear) and (m15Bear or m15Breakdown or liqBearReclaim)
+goldProxyAllowsLong = not useGoldProxyFilter or not goldProxyBear or (altLTFLongEdge and altCleanImpulse and goldProxyMixed)
+goldProxyAllowsShort = not useGoldProxyFilter or not goldProxyBull or (altLTFShortEdge and altCleanImpulse and goldProxyMixed)
+altLongReversalOK = useGoldEngine and altLTFLongEdge and altCleanImpulse and not altChaos and not distributionRisk and goldProxyAllowsLong
+altShortReversalOK = useGoldEngine and altLTFShortEdge and altCleanImpulse and not altChaos and not accumulationRisk and goldProxyAllowsShort
+if useGoldEngine
+    longScore += altLTFLongEdge ? consensusLongScore * 0.07 * altLTFWeight : 0.0
+    longScore -= altLTFShortEdge ? consensusShortScore * 0.07 * altLTFWeight : 0.0
+    shortScore += altLTFShortEdge ? consensusShortScore * 0.07 * altLTFWeight : 0.0
+    shortScore -= altLTFLongEdge ? consensusLongScore * 0.07 * altLTFWeight : 0.0
+    longScore += goldProxyBull ? goldProxyWeight : goldProxyBear ? -goldProxyWeight : 0.0
+    shortScore += goldProxyBear ? goldProxyWeight : goldProxyBull ? -goldProxyWeight : 0.0
+    longScore += altLongReversalOK ? 8.0 : 0.0
+    shortScore += altShortReversalOK ? 8.0 : 0.0
+    longScore -= (altChaos or altFakeImpulse) ? altTrapPenalty : 0.0
+    shortScore -= (altChaos or altFakeImpulse) ? altTrapPenalty : 0.0
+    longScore += macroConflictLong and altLongReversalOK ? 8.0 * altHTFRelax : 0.0
+    shortScore += macroConflictShort and altShortReversalOK ? 8.0 * altHTFRelax : 0.0
+    longScore -= useGoldProxyFilter and goldProxyBear and not altLongReversalOK ? 8.0 : 0.0
+    shortScore -= useGoldProxyFilter and goldProxyBull and not altShortReversalOK ? 8.0 : 0.0
+
+longConf = int(math.round(f_clamp(longScore, 0, 100)))
+shortConf = int(math.round(f_clamp(shortScore, 0, 100)))
+scoreGap = longScore - shortScore
+longAligned = not strongConflictLong and (not macroConflictLong or altLongReversalOK) and (bias4h != "JUAL" or altLongReversalOK) and (bias1d != "JUAL" or altLongReversalOK) and structureLongOK and not smartInvalidLong and (not useRealBOSCHOCH or smcTrendState >= 0 or chochBull or altLongReversalOK)
+shortAligned = not strongConflictShort and (not macroConflictShort or altShortReversalOK) and (bias4h != "BELI" or altShortReversalOK) and (bias1d != "BELI" or altShortReversalOK) and structureShortOK and not smartInvalidShort and (not useRealBOSCHOCH or smcTrendState <= 0 or chochBear or altShortReversalOK)
+strictGap = strictTrendMode ? math.max(minDirectionalGap, 18) : minDirectionalGap
+trendDirBase = scoreGap >= strictGap and longAligned and structureLongScore >= structureShortScore + minStructureEdge and smcLongBonus >= smcShortBonus - 4 ? "BELI" : scoreGap <= -strictGap and shortAligned and structureShortScore >= structureLongScore + minStructureEdge and smcShortBonus >= smcLongBonus - 4 ? "JUAL" : "SIDEWAYS"
+consensusTrendDir = consensusEdge >= consensusScoreGap and longAligned ? "BELI" : consensusEdge <= -consensusScoreGap and shortAligned ? "JUAL" : "SIDEWAYS"
+altFastLongFlip = useGoldEngine and altLongReversalOK and consensusEdge >= math.max(consensusScoreGap * 0.65, 6)
+altFastShortFlip = useGoldEngine and altShortReversalOK and consensusEdge <= -math.max(consensusScoreGap * 0.65, 6)
+trendDirCandidate = altFastLongFlip and not altFastShortFlip ? "BELI" : altFastShortFlip and not altFastLongFlip ? "JUAL" : microBullOverride and not microBearOverride ? "BELI" : microBearOverride and not microBullOverride ? "JUAL" : useConsensusDirection and consensusTrendDir != "SIDEWAYS" ? consensusTrendDir : trendDirBase
+var string confirmedTrendDir = "SIDEWAYS"
+var int trendFlipCount = 0
+trendFlipCount := trendDirCandidate == confirmedTrendDir ? 0 : trendFlipCount + 1
+if trendDirCandidate == "SIDEWAYS" or trendFlipCount >= flipConfirmBars or microBullOverride or microBearOverride
+    confirmedTrendDir := trendDirCandidate
+    trendFlipCount := 0
+trendDir = confirmedTrendDir
+
+//==================================================
+// V58 TRAP / MANIPULATION ENGINE - RETAINED + SIMPLIFIED
+//==================================================
+swingHighTrap = ta.highest(high[1], 10)
+swingLowTrap = ta.lowest(low[1], 10)
+bullTrapNow = volZ >= trapVolZThr and rangeShock and upperWick >= atr * wickATRTrap and high > swingHighTrap and close < swingHighTrap
+bearTrapNow = volZ >= trapVolZThr and rangeShock and lowerWick >= atr * wickATRTrap and low < swingLowTrap and close > swingLowTrap
+eqHighRef = ta.highest(high[1], 20)
+eqLowRef = ta.lowest(low[1], 20)
+eqHighSweep = high > eqHighRef and close < eqHighRef and upperWick >= atr * 0.12
+eqLowSweep = low < eqLowRef and close > eqLowRef and lowerWick >= atr * 0.12
+slowStopHunt = (math.abs(close - eqHighRef) <= atr * 0.35 and candleBody <= atr * 0.28 and close > close[1]) or (math.abs(close - eqLowRef) <= atr * 0.35 and candleBody <= atr * 0.28 and close < close[1])
+validBullBreakout = close > eqHighRef and close > open and clv >= 0.68 and candleBody >= atr * math.max(0.45, useGoldEngine ? altMinBreakBodyATR : 0.45) and volRatio >= sessVolBreakoutRatio and not altFakeImpulse
+validBearBreakout = close < eqLowRef and close < open and clv <= 0.32 and candleBody >= atr * math.max(0.45, useGoldEngine ? altMinBreakBodyATR : 0.45) and volRatio >= sessVolBreakoutRatio and not altFakeImpulse
+validBreakout = validBullBreakout or validBearBreakout
+trapScoreRaw = (volZ >= trapVolZThr ? 25.0 : 0.0) + (rangeShock ? 20.0 : 0.0) + ((upperWick >= atr * wickATRTrap or lowerWick >= atr * wickATRTrap) ? 25.0 : 0.0) + ((bullTrapNow or bearTrapNow) ? 18.0 : 0.0) + ((eqHighSweep or eqLowSweep or liqSweepHighSMC or liqSweepLowSMC) ? 16.0 : 0.0) + (slowStopHunt ? 16.0 : 0.0) + ((distributionRisk or accumulationRisk) ? 10.0 : 0.0) - (validBreakout ? 18.0 : 0.0)
+trapScore = int(math.round(f_clamp(trapScoreRaw + altTrapPenalty, 0, 100)))
+isTrap = trapScore >= trapScoreThr
+trapType = bullTrapNow ? "BULL TRAP" : bearTrapNow ? "BEAR TRAP" : liqSweepHighSMC or liqSweepLowSMC or eqHighSweep or eqLowSweep ? "LIQ SWEEP" : distributionRisk ? "DISTRIBUSI" : accumulationRisk ? "AKUMULASI" : slowStopHunt ? "SLOW HUNT" : isTrap ? "STOP HUNT" : "BERSIH"
+flowTrapBlock = flowTrapBlockBase or altChaos or (useFlowLiquidityTP and thinFlowWickRisk and (liqSweepHighSMC or liqSweepLowSMC or isTrap or bullTrapNow or bearTrapNow))
+
+// Directional manipulation gate.
+// This does not change the panel structure; it only blocks execution when price is exposed to
+// resistance/support traps, fake volume, liquidation sweep, Wyckoff-style wick-off, or stop-hunt behavior.
+nearStrongResistance = priceNearResistance and srResistanceStrength >= 56
+nearStrongSupport = priceNearSupport and srSupportStrength >= 56
+fakeBullBreakoutRisk = (liqSweepHighSMC or eqHighSweep or bullTrapNow) and not validBullBreakout
+fakeBearBreakoutRisk = (liqSweepLowSMC or eqLowSweep or bearTrapNow) and not validBearBreakout
+wickOffRiskLong = upperWick >= atr * wickATRTrap and clv <= 0.45 and (nearStrongResistance or high > swingHighTrap)
+wickOffRiskShort = lowerWick >= atr * wickATRTrap and clv >= 0.55 and (nearStrongSupport or low < swingLowTrap)
+fakeVolLongRisk = volShock and upperWick > lowerWick and close <= bodyHigh and close < open
+fakeVolShortRisk = volShock and lowerWick > upperWick and close >= bodyLow and close > open
+longManipulationBlock = fakeBullBreakoutRisk or wickOffRiskLong or fakeVolLongRisk or slowStopHunt or (nearStrongResistance and not validBullBreakout)
+shortManipulationBlock = fakeBearBreakoutRisk or wickOffRiskShort or fakeVolShortRisk or slowStopHunt or (nearStrongSupport and not validBearBreakout)
+
+// V61.4 pressure-cluster guard. This catches gradual sell/buy pressure that is not a single wick trap.
+bearVolCluster = math.sum((close < open and volume > sessVolBase * pressureVolRatio) ? 1.0 : 0.0, pressureClusterBars) >= pressureClusterMin
+bullVolCluster = math.sum((close > open and volume > sessVolBase * pressureVolRatio) ? 1.0 : 0.0, pressureClusterBars) >= pressureClusterMin
+bearPressure = usePressureCluster and bearVolCluster and close < emaFast and emaFast < emaSlow and macdHist < 0 and close < vwapVal
+bullPressure = usePressureCluster and bullVolCluster and close > emaFast and emaFast > emaSlow and macdHist > 0 and close > vwapVal
+longManipulationBlock := longManipulationBlock or bearPressure
+shortManipulationBlock := shortManipulationBlock or bullPressure
+
+// V61.6: Stealth distribution/accumulation catches slow traps with repeated wicks and fading momentum.
+stealthDistribution = useStealthTrap and math.sum(upperWick > candleBody ? 1.0 : 0.0, 8) >= 4 and close < emaFast and volume <= sessVolBase * 1.20 and rsi < nz(rsi[1], rsi) and high <= ta.highest(high, 12)
+stealthAccumulation = useStealthTrap and math.sum(lowerWick > candleBody ? 1.0 : 0.0, 8) >= 4 and close > emaFast and volume <= sessVolBase * 1.20 and rsi > nz(rsi[1], rsi) and low >= ta.lowest(low, 12)
+longManipulationBlock := longManipulationBlock or stealthDistribution
+shortManipulationBlock := shortManipulationBlock or stealthAccumulation
+
+// V61.6: Shock/liquidation freeze. Do not enter during the first bars after violent candles.
+shockCandle = useShockFreeze and (candleRange >= atr * shockRangeATR or volZ >= 3.0 or candleBody >= atr * shockBodyATR)
+var int shockFreeze = 0
+shockFreeze := shockCandle ? shockFreezeBars : math.max(shockFreeze - 1, 0)
+shockActive = useShockFreeze and shockFreeze > 0
+
+cooldownAdaptive = useAdaptiveTrapCooldown ? (trapScore >= 85 ? 7 : trapScore >= 70 ? 6 : trapScore >= trapScoreThr ? 4 : 0) : 4
+var int cooldown = 0
+cooldown := isTrap ? cooldownAdaptive : math.max(cooldown - 1, 0)
+cooldownTrap = cooldown > 0
+
+//==================================================
+// EW / DEEP ADD ENGINE - PRO REACHABILITY UPGRADE
+//==================================================
+regimeSidewaysPre = antiChop or adx < 18 or math.abs(scoreGap) < strictGap * 1.25 or rangeCompression or regimeClass == "KOMPRESI" or regimeClass == "DISTRIBUSI" or regimeClass == "AKUMULASI"
+ew1MaxBase = timeframe.isdaily ? math.min(ew1MaxATR, 0.58) : timeframe.isweekly ? math.min(ew1MaxATR, 0.50) : regimeSidewaysPre ? math.min(ew1MaxATR, 0.62) : ew1MaxATR
+ew1MaxEff = ew1MaxBase * altEWFactor
+ew2Eff = (timeframe.isdaily ? math.min(ew2ATR, 0.34) : regimeSidewaysPre ? math.min(ew2ATR, 0.36) : ew2ATR) * altEWFactor
+ew3Eff = (timeframe.isdaily ? math.min(ew3ATR, 0.62) : regimeSidewaysPre ? math.min(ew3ATR, 0.66) : ew3ATR) * altEWFactor
+deepEff = (timeframe.isdaily ? math.min(deepATR, 0.88) : regimeSidewaysPre ? math.min(deepATR, 0.96) : deepATR) * f_clamp(altEWFactor + 0.08, 0.50, 1.12)
+swingH = ta.highest(high[1], swingLookback)
+swingL = ta.lowest(low[1], swingLookback)
+rawLongAnchor = math.max(math.max(swingL, dLow), close - atr * ew1MaxEff)
+rawShortAnchor = math.min(math.min(swingH, dHigh), close + atr * ew1MaxEff)
+longEW1 = f_reach_long(rawLongAnchor, close, atr, ew1MinATR, ew1MaxEff)
+shortEW1 = f_reach_short(rawShortAnchor, close, atr, ew1MinATR, ew1MaxEff)
+longEW2 = math.min(longEW1 - atr * ew2Eff, close - atr * (ew1MinATR + 0.10))
+longEW3 = math.min(longEW1 - atr * ew3Eff, longEW2 - atr * 0.08)
+longDeep = math.min(longEW1 - atr * deepEff, longEW3 - atr * 0.08)
+shortEW2 = math.max(shortEW1 + atr * ew2Eff, close + atr * (ew1MinATR + 0.10))
+shortEW3 = math.max(shortEW1 + atr * ew3Eff, shortEW2 + atr * 0.08)
+shortDeep = math.max(shortEW1 + atr * deepEff, shortEW3 + atr * 0.08)
+// Stage 2: align EW with valid orderblock when nearby so entry zone is not only ATR-based.
+if useSupplyDemand and bullOBValid and math.abs(bullOBHigh - longEW1) <= atr * 0.75
+    longEW1 := math.max(math.min(longEW1, bullOBHigh), bullOBLow)
+    longEW2 := math.max(math.min(longEW2, bullOBHigh), bullOBLow - atr * 0.20)
+if useSupplyDemand and bearOBValid and math.abs(bearOBLow - shortEW1) <= atr * 0.75
+    shortEW1 := math.min(math.max(shortEW1, bearOBLow), bearOBHigh)
+    shortEW2 := math.min(math.max(shortEW2, bearOBLow), bearOBHigh + atr * 0.20)
+
+//==================================================
+// SL PROTECTION ENGINE - RETAINED
+//==================================================
+longBaseStop = longDeep - atr * minSLDistanceATR
+shortBaseStop = shortDeep + atr * minSLDistanceATR
+longSwingStop = ta.lowest(low[1], slStructureLookback)
+shortSwingStop = ta.highest(high[1], slStructureLookback)
+longSL = f_long_sl(longBaseStop, longDeep, longSwingStop, vwapVal, emaSlow, atr, sess, isTrap, cooldownTrap, volShock, lowerWick)
+shortSL = f_short_sl(shortBaseStop, shortDeep, shortSwingStop, vwapVal, emaSlow, atr, sess, isTrap, cooldownTrap, volShock, upperWick)
+wickLongSL = ta.lowest(low, wickOffLookback) - atr * wickOffBufferATR
+wickShortSL = ta.highest(high, wickOffLookback) + atr * wickOffBufferATR
+longSL := math.min(longSL, wickLongSL)
+shortSL := math.max(shortSL, wickShortSL)
+// final hard cap prevents SL from becoming unrealistically far after wick-off adjustment
+longSL := math.max(longSL, close - atr * maxSLDistanceATR * (useGoldEngine ? altSLFactor : 1.0))
+shortSL := math.min(shortSL, close + atr * maxSLDistanceATR * (useGoldEngine ? altSLFactor : 1.0))
+
+//==================================================
+// TP ENGINE - FIXED: NO OVER-TARGET IN SIDEWAYS
+//==================================================
+regimeSideways = regimeSidewaysPre
+trendTPFactor = not useDynamicTPScaling ? (regimeSideways ? 0.62 : adx >= 25 and math.abs(scoreGap) >= strictGap * 1.8 ? 0.95 : 0.78) : continuationLong or continuationShort ? 1.00 : distributionRisk or accumulationRisk ? 0.52 : momentumDecayLong or momentumDecayShort ? 0.58 : regimeSideways ? 0.62 : adx >= 25 and math.abs(scoreGap) >= strictGap * 1.8 ? 0.90 : 0.74
+longTPBase = math.max(close, longEW1)
+shortTPBase = math.min(close, shortEW1)
+longLiqCap = math.min(dHigh > longTPBase ? dHigh : longTPBase + atr * tp3ATR, wHigh > longTPBase ? wHigh : longTPBase + atr * tp3ATR)
+shortLiqCap = math.max(dLow < shortTPBase ? dLow : shortTPBase - atr * tp3ATR, wLow < shortTPBase ? wLow : shortTPBase - atr * tp3ATR)
+longTP1Raw = longTPBase + atr * tp1ATR * trendTPFactor * sessTPFactor * altTPFactor
+longTP2Raw = longTPBase + atr * tp2ATR * trendTPFactor * sessTPFactor * altTPFactor
+longTP3Raw = longTPBase + atr * tp3ATR * trendTPFactor * sessTPFactor * altTPFactor
+shortTP1Raw = shortTPBase - atr * tp1ATR * trendTPFactor * sessTPFactor * altTPFactor
+shortTP2Raw = shortTPBase - atr * tp2ATR * trendTPFactor * sessTPFactor * altTPFactor
+shortTP3Raw = shortTPBase - atr * tp3ATR * trendTPFactor * sessTPFactor * altTPFactor
+longTP1Pre = useLiquidityTP ? math.min(longTP1Raw, math.max(longLiqCap, longTPBase + atr * tpStepMinATR)) : longTP1Raw
+longTP1 = f_cap_long(f_long_tp_fix(longTP1Pre, longTPBase, longTPBase, atr), longTPBase, atr, regimeSideways ? math.min(maxTP1ATR, 0.60) : maxTP1ATR)
+longTP2Pre = useLiquidityTP ? math.min(longTP2Raw, math.max(longLiqCap, longTP1 + atr * tpStepMinATR)) : longTP2Raw
+longTP2 = f_cap_long(f_long_tp_fix(longTP2Pre, longTPBase, longTP1, atr), longTPBase, atr, regimeSideways ? math.min(maxTP2ATR, 0.95) : maxTP2ATR)
+longTP3Pre = useLiquidityTP ? math.min(longTP3Raw, math.max(longLiqCap, longTP2 + atr * tpStepMinATR)) : longTP3Raw
+longTP3 = f_cap_long(f_long_tp_fix(longTP3Pre, longTPBase, longTP2, atr), longTPBase, atr, regimeSideways ? math.min(maxTP3ATR, 1.30) : maxTP3ATR)
+shortTP1Pre = useLiquidityTP ? math.max(shortTP1Raw, math.min(shortLiqCap, shortTPBase - atr * tpStepMinATR)) : shortTP1Raw
+shortTP1 = f_cap_short(f_short_tp_fix(shortTP1Pre, shortTPBase, shortTPBase, atr), shortTPBase, atr, regimeSideways ? math.min(maxTP1ATR, 0.60) : maxTP1ATR)
+shortTP2Pre = useLiquidityTP ? math.max(shortTP2Raw, math.min(shortLiqCap, shortTP1 - atr * tpStepMinATR)) : shortTP2Raw
+shortTP2 = f_cap_short(f_short_tp_fix(shortTP2Pre, shortTPBase, shortTP1, atr), shortTPBase, atr, regimeSideways ? math.min(maxTP2ATR, 0.95) : maxTP2ATR)
+shortTP3Pre = useLiquidityTP ? math.max(shortTP3Raw, math.min(shortLiqCap, shortTP2 - atr * tpStepMinATR)) : shortTP3Raw
+shortTP3 = f_cap_short(f_short_tp_fix(shortTP3Pre, shortTPBase, shortTP2, atr), shortTPBase, atr, regimeSideways ? math.min(maxTP3ATR, 1.30) : maxTP3ATR)
+
+//==================================================
+// EW SESSION REACHABILITY PATCH - V61.2
+//==================================================
+// Purpose:
+// - Fix the case where a new session trends directly to TP1/TP2/TP3 without revisiting the old ATR anchor.
+// - EW1/EW2/EW3 are adjusted first, then Deep Add, SL, and TP are synchronized below.
+// - The panel layout and colors are untouched.
+
+validSessionAnchor = useSessionReachableEW and not na(sessOpenAnchor) and atr > 0.0
+sessionImpulseUp = validSessionAnchor and close > sessOpenAnchor + atr * 0.18 and sessHighAnchor > sessOpenAnchor + atr * 0.28
+sessionImpulseDown = validSessionAnchor and close < sessOpenAnchor - atr * 0.18 and sessLowAnchor < sessOpenAnchor - atr * 0.28
+
+// A strong session continuation needs a micro-pullback entry ladder, not a stale deep pullback ladder.
+// This keeps EW reachable in fast BTC sessions while preserving SL/TP calculations.
+longEWFastMode = ewMomentumEWMode and sessionImpulseUp and (trendDir == "BELI" or longConf >= shortConf + 8 or continuationLong or validBullBreakout) and not distributionRisk and not bullTrapNow
+shortEWFastMode = ewMomentumEWMode and sessionImpulseDown and (trendDir == "JUAL" or shortConf >= longConf + 8 or continuationShort or validBearBreakout) and not accumulationRisk and not bearTrapNow
+
+longSessEW1 = math.max(sessOpenAnchor + atr * ewSessionOpenBufferATR, close - atr * ewMicro1ATR)
+longSessEW2 = math.max(sessOpenAnchor, close - atr * ewMicro2ATR)
+longSessEW3 = math.max(sessLowAnchor, close - atr * ewMicro3ATR)
+shortSessEW1 = math.min(sessOpenAnchor - atr * ewSessionOpenBufferATR, close + atr * ewMicro1ATR)
+shortSessEW2 = math.min(sessOpenAnchor, close + atr * ewMicro2ATR)
+shortSessEW3 = math.min(sessHighAnchor, close + atr * ewMicro3ATR)
+
+if longEWFastMode
+    longEW1 := math.min(math.max(longEW1, longSessEW1), close - atr * math.max(ew1MinATR * 0.35, 0.02))
+    longEW2 := math.min(math.max(longEW2, longSessEW2), longEW1 - atr * 0.04)
+    longEW3 := math.min(math.max(longEW3, longSessEW3), longEW2 - atr * 0.04)
+
+if shortEWFastMode
+    shortEW1 := math.max(math.min(shortEW1, shortSessEW1), close + atr * math.max(ew1MinATR * 0.35, 0.02))
+    shortEW2 := math.max(math.min(shortEW2, shortSessEW2), shortEW1 + atr * 0.04)
+    shortEW3 := math.max(math.min(shortEW3, shortSessEW3), shortEW2 + atr * 0.04)
+
+// Defensive ordering guard. Ensures the panel never shows broken EW order.
+longEW2 := math.min(longEW2, longEW1 - atr * 0.03)
+longEW3 := math.min(longEW3, longEW2 - atr * 0.03)
+shortEW2 := math.max(shortEW2, shortEW1 + atr * 0.03)
+shortEW3 := math.max(shortEW3, shortEW2 + atr * 0.03)
+
+// Final EW/SL/TP synchronization guard.
+// In fast BTC sessions EW1-EW3 may be moved closer to price. SL, Deep Add, and TP must be recalculated
+// after that movement so the panel does not show stale protection or stale targets.
+if longEWFastMode
+    longDeep := math.min(longEW3 - atr * math.max(0.08, ewMicro3ATR * 0.45), close - atr * math.max(ewMicro3ATR + 0.10, 0.28))
+if shortEWFastMode
+    shortDeep := math.max(shortEW3 + atr * math.max(0.08, ewMicro3ATR * 0.45), close + atr * math.max(ewMicro3ATR + 0.10, 0.28))
+longDeep := math.min(longDeep, longEW3 - atr * 0.05)
+shortDeep := math.max(shortDeep, shortEW3 + atr * 0.05)
+
+longBaseStopFinal = longDeep - atr * minSLDistanceATR
+shortBaseStopFinal = shortDeep + atr * minSLDistanceATR
+longSL := f_long_sl(longBaseStopFinal, longDeep, longSwingStop, vwapVal, emaSlow, atr, sess, isTrap, cooldownTrap, volShock, lowerWick)
+shortSL := f_short_sl(shortBaseStopFinal, shortDeep, shortSwingStop, vwapVal, emaSlow, atr, sess, isTrap, cooldownTrap, volShock, upperWick)
+longSL := math.min(longSL, wickLongSL)
+shortSL := math.max(shortSL, wickShortSL)
+longSL := math.max(longSL, close - atr * maxSLDistanceATR * (useGoldEngine ? altSLFactor : 1.0))
+shortSL := math.min(shortSL, close + atr * maxSLDistanceATR * (useGoldEngine ? altSLFactor : 1.0))
+longSL := math.min(longSL, longEW3 - atr * 0.05)
+shortSL := math.max(shortSL, shortEW3 + atr * 0.05)
+
+longTPBase := math.max(close, longEW1)
+shortTPBase := math.min(close, shortEW1)
+longLiqCap := math.min(dHigh > longTPBase ? dHigh : longTPBase + atr * tp3ATR, wHigh > longTPBase ? wHigh : longTPBase + atr * tp3ATR)
+shortLiqCap := math.max(dLow < shortTPBase ? dLow : shortTPBase - atr * tp3ATR, wLow < shortTPBase ? wLow : shortTPBase - atr * tp3ATR)
+longTP1Raw := longTPBase + atr * tp1ATR * trendTPFactor * sessTPFactor * altTPFactor
+longTP2Raw := longTPBase + atr * tp2ATR * trendTPFactor * sessTPFactor * altTPFactor
+longTP3Raw := longTPBase + atr * tp3ATR * trendTPFactor * sessTPFactor * altTPFactor
+shortTP1Raw := shortTPBase - atr * tp1ATR * trendTPFactor * sessTPFactor * altTPFactor
+shortTP2Raw := shortTPBase - atr * tp2ATR * trendTPFactor * sessTPFactor * altTPFactor
+shortTP3Raw := shortTPBase - atr * tp3ATR * trendTPFactor * sessTPFactor * altTPFactor
+longTP1Pre := useLiquidityTP ? math.min(longTP1Raw, math.max(longLiqCap, longTPBase + atr * tpStepMinATR)) : longTP1Raw
+longTP1 := f_cap_long(f_long_tp_fix(longTP1Pre, longTPBase, longTPBase, atr), longTPBase, atr, regimeSideways ? math.min(maxTP1ATR, 0.60) : maxTP1ATR)
+longTP2Pre := useLiquidityTP ? math.min(longTP2Raw, math.max(longLiqCap, longTP1 + atr * tpStepMinATR)) : longTP2Raw
+longTP2 := f_cap_long(f_long_tp_fix(longTP2Pre, longTPBase, longTP1, atr), longTPBase, atr, regimeSideways ? math.min(maxTP2ATR, 0.95) : maxTP2ATR)
+longTP3Pre := useLiquidityTP ? math.min(longTP3Raw, math.max(longLiqCap, longTP2 + atr * tpStepMinATR)) : longTP3Raw
+longTP3 := f_cap_long(f_long_tp_fix(longTP3Pre, longTPBase, longTP2, atr), longTPBase, atr, regimeSideways ? math.min(maxTP3ATR, 1.30) : maxTP3ATR)
+shortTP1Pre := useLiquidityTP ? math.max(shortTP1Raw, math.min(shortLiqCap, shortTPBase - atr * tpStepMinATR)) : shortTP1Raw
+shortTP1 := f_cap_short(f_short_tp_fix(shortTP1Pre, shortTPBase, shortTPBase, atr), shortTPBase, atr, regimeSideways ? math.min(maxTP1ATR, 0.60) : maxTP1ATR)
+shortTP2Pre := useLiquidityTP ? math.max(shortTP2Raw, math.min(shortLiqCap, shortTP1 - atr * tpStepMinATR)) : shortTP2Raw
+shortTP2 := f_cap_short(f_short_tp_fix(shortTP2Pre, shortTPBase, shortTP1, atr), shortTPBase, atr, regimeSideways ? math.min(maxTP2ATR, 0.95) : maxTP2ATR)
+shortTP3Pre := useLiquidityTP ? math.max(shortTP3Raw, math.min(shortLiqCap, shortTP2 - atr * tpStepMinATR)) : shortTP3Raw
+shortTP3 := f_cap_short(f_short_tp_fix(shortTP3Pre, shortTPBase, shortTP2, atr), shortTPBase, atr, regimeSideways ? math.min(maxTP3ATR, 1.30) : maxTP3ATR)
+
+// V61.6: Local liquidity TP cap for scalping. Daily/weekly levels are often too far for BTC 1m.
+localHigh20 = ta.highest(high[1], 20)
+localHigh50 = ta.highest(high[1], 50)
+localLow20 = ta.lowest(low[1], 20)
+localLow50 = ta.lowest(low[1], 50)
+longLocalTP1Cap = localHigh20 > longTPBase + atr * tpStepMinATR ? localHigh20 : longTPBase + atr * maxTP1ATR
+longLocalTP2Cap = localHigh50 > longTPBase + atr * tpStepMinATR ? localHigh50 : longTPBase + atr * maxTP2ATR
+shortLocalTP1Cap = localLow20 < shortTPBase - atr * tpStepMinATR ? localLow20 : shortTPBase - atr * maxTP1ATR
+shortLocalTP2Cap = localLow50 < shortTPBase - atr * tpStepMinATR ? localLow50 : shortTPBase - atr * maxTP2ATR
+if useLocalLiquidityTPCap
+    longTP1 := math.min(longTP1, math.max(longLocalTP1Cap, longTPBase + atr * tpStepMinATR))
+    longTP2 := math.min(longTP2, math.max(longLocalTP2Cap, longTP1 + atr * tpStepMinATR))
+    longTP3 := regimeSideways ? math.min(longTP3, longTP2 + atr * math.min(tpStepMinATR, 0.25)) : longTP3
+    shortTP1 := math.max(shortTP1, math.min(shortLocalTP1Cap, shortTPBase - atr * tpStepMinATR))
+    shortTP2 := math.max(shortTP2, math.min(shortLocalTP2Cap, shortTP1 - atr * tpStepMinATR))
+    shortTP3 := regimeSideways ? math.max(shortTP3, shortTP2 - atr * math.min(tpStepMinATR, 0.25)) : shortTP3
+
+// V61.8: final adaptive TP compression/expansion by liquidity and flow.
+// EW1-EW3 are untouched. Only TP distance is tightened when volume/ATR are thin,
+// and kept flexible when volume/volatility expands with clean continuation.
+if useFlowLiquidityTP
+    flowTP1MaxUse = (flowTrapBlock ? math.min(flowTP1MaxATR, lowLiqTP1MaxATR) : flowTP1MaxATR) * (useGoldEngine ? altTPFactor : 1.0)
+    flowTP2MaxUse = (flowTrapBlock ? math.min(flowTP2MaxATR, lowLiqTP2MaxATR) : flowTP2MaxATR) * (useGoldEngine ? altTPFactor : 1.0)
+    flowTP3MaxUse = (flowTrapBlock ? math.min(flowTP3MaxATR, lowLiqTP3MaxATR) : flowTP3MaxATR) * (useGoldEngine ? altTPFactor : 1.0)
+    longTP1 := f_long_tp_flow(longTP1, longTPBase, longTPBase, atr, flowTP1MaxUse, flowMinStepATR)
+    longTP2 := f_long_tp_flow(longTP2, longTPBase, longTP1, atr, flowTP2MaxUse, flowMinStepATR)
+    longTP3 := f_long_tp_flow(longTP3, longTPBase, longTP2, atr, flowTP3MaxUse, flowMinStepATR)
+    shortTP1 := f_short_tp_flow(shortTP1, shortTPBase, shortTPBase, atr, flowTP1MaxUse, flowMinStepATR)
+    shortTP2 := f_short_tp_flow(shortTP2, shortTPBase, shortTP1, atr, flowTP2MaxUse, flowMinStepATR)
+    shortTP3 := f_short_tp_flow(shortTP3, shortTPBase, shortTP2, atr, flowTP3MaxUse, flowMinStepATR)
+
+// V61.7: local S/R target clearance and anti-chase. If TP is blocked by strong local S/R or price is already too near TP1, reject execution while keeping map levels visible.
+longTP1BlockedBySR = useTargetBlockSR and srResistanceStrength >= 60 and srResistance > longTPBase and srResistance < longTP1 + atr * targetClearATR
+shortTP1BlockedBySR = useTargetBlockSR and srSupportStrength >= 60 and srSupport < shortTPBase and srSupport > shortTP1 - atr * targetClearATR
+altNoChaseATR = useGoldEngine ? math.min(noChaseTP1ATR, altMaxChaseATR) : noChaseTP1ATR
+longNoChaseRisk = high >= longTP1 or (close > longEW1 and math.abs(longTP1 - close) <= atr * altNoChaseATR)
+shortNoChaseRisk = low <= shortTP1 or (close < shortEW1 and math.abs(close - shortTP1) <= atr * altNoChaseATR)
+
+// V61.6: Dynamic maximum SL. Keep panel level visible but reject trades if original structure needs too much risk.
+maxSLDynamic = (sess == "ASIA" ? maxSLAsiaATR : sess == "EROPA" ? maxSLEuropeATR : maxSLUSAATR) * (useGoldEngine ? altSLFactor : 1.0)
+longSLDistanceATRRaw = atr > 0.0 ? (longEW1 - longSL) / atr : 0.0
+shortSLDistanceATRRaw = atr > 0.0 ? (shortSL - shortEW1) / atr : 0.0
+longSLTooWide = useDynamicMaxSLReject and longSLDistanceATRRaw > maxSLDynamic
+shortSLTooWide = useDynamicMaxSLReject and shortSLDistanceATRRaw > maxSLDynamic
+longSLCap = longEW1 - atr * maxSLDynamic
+shortSLCap = shortEW1 + atr * maxSLDynamic
+longSL := useDynamicMaxSLReject ? math.max(longSL, longSLCap) : longSL
+shortSL := useDynamicMaxSLReject ? math.min(shortSL, shortSLCap) : shortSL
+longSL := math.min(longSL, longEW3 - atr * 0.05)
+shortSL := math.max(shortSL, shortEW3 + atr * 0.05)
+if useGoldEngine
+    longSL := math.min(longSL, longEW3 - atr * math.max(0.05, 0.05 * altSLFactor))
+    shortSL := math.max(shortSL, shortEW3 + atr * math.max(0.05, 0.05 * altSLFactor))
+
+// V61.6: TP probability score used for execution and panel quality.
+longTP1Prob = f_prob_score(longConf, math.abs(longTP1 - close) / math.max(atr, syminfo.mintick), trapScore, regimeSideways, shockActive, adx)
+longTP2Prob = int(math.round(f_clamp(longTP1Prob - 18.0, 0.0, 100.0)))
+longTP3Prob = int(math.round(f_clamp(longTP2Prob - (regimeSideways ? 30.0 : 22.0), 0.0, 100.0)))
+shortTP1Prob = f_prob_score(shortConf, math.abs(shortTP1 - close) / math.max(atr, syminfo.mintick), trapScore, regimeSideways, shockActive, adx)
+shortTP2Prob = int(math.round(f_clamp(shortTP1Prob - 18.0, 0.0, 100.0)))
+shortTP3Prob = int(math.round(f_clamp(shortTP2Prob - (regimeSideways ? 30.0 : 22.0), 0.0, 100.0)))
+
+// V61.7: probability penalties for blocked targets and chase entries.
+longTP1Prob := int(math.round(f_clamp(longTP1Prob - (longTP1BlockedBySR ? 18.0 : 0.0) - (longNoChaseRisk ? 20.0 : 0.0) - flowProbPenalty - (flowTrapBlock ? 18.0 : 0.0) - altTrapPenalty, 0.0, 100.0)))
+longTP2Prob := int(math.round(f_clamp(longTP1Prob - 18.0 - (regimeSideways ? 8.0 : 0.0) - (flowState == "RENDAH" ? 6.0 : 0.0), 0.0, 100.0)))
+longTP3Prob := int(math.round(f_clamp(longTP2Prob - (regimeSideways ? 30.0 : 22.0) - (flowState == "RENDAH" ? 8.0 : 0.0), 0.0, 100.0)))
+shortTP1Prob := int(math.round(f_clamp(shortTP1Prob - (shortTP1BlockedBySR ? 18.0 : 0.0) - (shortNoChaseRisk ? 20.0 : 0.0) - flowProbPenalty - (flowTrapBlock ? 18.0 : 0.0) - altTrapPenalty, 0.0, 100.0)))
+shortTP2Prob := int(math.round(f_clamp(shortTP1Prob - 18.0 - (regimeSideways ? 8.0 : 0.0) - (flowState == "RENDAH" ? 6.0 : 0.0), 0.0, 100.0)))
+shortTP3Prob := int(math.round(f_clamp(shortTP2Prob - (regimeSideways ? 30.0 : 22.0) - (flowState == "RENDAH" ? 8.0 : 0.0), 0.0, 100.0)))
+
+//==================================================
+// V61.4 HARD INVALIDATION / KILL-SWITCH ENGINE
+//==================================================
+// These guards cancel the plan before SL when the structure has already failed.
+// Long is blocked by EW3/Deep Add break, bearish EMA pressure, bearish BOS/CHOCH, M5/M15 bearish confirmation, or pressure cluster.
+// Short is blocked by EW3/Deep Add break, bullish EMA pressure, bullish BOS/CHOCH, M5/M15 bullish confirmation, or pressure cluster.
+var int longDeepFailCount = 0
+var int shortDeepFailCount = 0
+longDeepTouchedNoReclaim = useDeepAddKill and low <= longDeep and close < longEW2
+shortDeepTouchedNoReclaim = useDeepAddKill and high >= shortDeep and close > shortEW2
+longDeepFailCount := close > longEW2 or close > longEW1 ? 0 : longDeepTouchedNoReclaim ? deepReclaimBars : math.max(longDeepFailCount - 1, 0)
+shortDeepFailCount := close < shortEW2 or close < shortEW1 ? 0 : shortDeepTouchedNoReclaim ? deepReclaimBars : math.max(shortDeepFailCount - 1, 0)
+longDeepFailActive = useDeepAddKill and longDeepFailCount > 0 and close < longEW2
+shortDeepFailActive = useDeepAddKill and shortDeepFailCount > 0 and close > shortEW2
+
+mtfLongBlocked = useM5M15Guard and (bias5 == "JUAL" or bias15 == "JUAL" or m5Breakdown or m15Breakdown)
+mtfShortBlocked = useM5M15Guard and (bias5 == "BELI" or bias15 == "BELI" or m5Breakout or m15Breakout)
+
+// V61.6: structure-exit logic. If structure has already failed, cancel before waiting for SL.
+longInvalidStructure = close < longEW3 and close < emaFast and emaFast < emaSlow and low < ta.lowest(low[1], 8)
+shortInvalidStructure = close > shortEW3 and close > emaFast and emaFast > emaSlow and high > ta.highest(high[1], 8)
+
+longKill = (useDeepAddKill and (close < longEW3 or close < longDeep or longDeepFailActive)) or (emaFast < emaSlow and close < emaSlow) or (close < vwapVal and macdHist < 0) or validBearBreakout or realBosBear or chochBear or bearPressure or mtfLongBlocked or microBearOverride or longInvalidStructure or shockActive
+shortKill = (useDeepAddKill and (close > shortEW3 or close > shortDeep or shortDeepFailActive)) or (emaFast > emaSlow and close > emaSlow) or (close > vwapVal and macdHist > 0) or validBullBreakout or realBosBull or chochBull or bullPressure or mtfShortBlocked or microBullOverride or shortInvalidStructure or shockActive
+
+//==================================================
+// DECISION ENGINE
+//==================================================
+isM15 = timeframe.isminutes and timeframe.multiplier == 15
+isH1 = timeframe.isminutes and timeframe.multiplier == 60
+isH4 = timeframe.isminutes and timeframe.multiplier == 240
+minConf = isM15 ? minConf15M : isH1 ? minConf1H : isH4 ? minConf4H : minConf1D
+planLong = trendDir == "BELI"
+planShort = trendDir == "JUAL"
+
+// V61.6 EW quality: EW1 is watch only, EW2/EW3 are valid entry zones, Deep Add only after strong reclaim.
+altPullbackFactor = useGoldEngine ? (altWildVol ? 0.72 : altThinFlow ? 0.82 : 1.0) : 1.0
+longEWValidDistance = close - longEW1 >= atr * minPullbackATR * altPullbackFactor
+shortEWValidDistance = shortEW1 - close >= atr * minPullbackATR * altPullbackFactor
+basicReclaimLong = close > longEW1 or (low <= longEW2 and close > open and lowerWick > candleBody * 0.50)
+basicReclaimShort = close < shortEW1 or (high >= shortEW2 and close < open and upperWick > candleBody * 0.50)
+strongReclaimLong = not useStrongReclaim ? basicReclaimLong : ((close > longEW1 and close > emaFast and clv >= 0.62 and volRatio >= minReclaimVolRatio) or (low <= longEW2 and close > longEW1 and close > open and clv >= 0.62 and volRatio >= minReclaimVolRatio))
+strongReclaimShort = not useStrongReclaim ? basicReclaimShort : ((close < shortEW1 and close < emaFast and clv <= 0.38 and volRatio >= minReclaimVolRatio) or (high >= shortEW2 and close < shortEW1 and close < open and clv <= 0.38 and volRatio >= minReclaimVolRatio))
+deepReclaimLong = low <= longDeep and close > longEW2 and clv >= 0.68 and close > open and volRatio >= minReclaimVolRatio
+deepReclaimShort = high >= shortDeep and close < shortEW2 and clv <= 0.32 and close < open and volRatio >= minReclaimVolRatio
+entryQualityLong = deepReclaimLong ? 4 : low <= longEW3 and strongReclaimLong ? 3 : low <= longEW2 and strongReclaimLong ? 2 : low <= longEW1 and basicReclaimLong ? 1 : 0
+entryQualityShort = deepReclaimShort ? 4 : high >= shortEW3 and strongReclaimShort ? 3 : high >= shortEW2 and strongReclaimShort ? 2 : high >= shortEW1 and basicReclaimShort ? 1 : 0
+entryTouchedLong = entryQualityLong >= minEntryQuality and longEWValidDistance
+entryTouchedShort = entryQualityShort >= minEntryQuality and shortEWValidDistance
+reclaimLong = entryQualityLong >= 2 ? strongReclaimLong : basicReclaimLong
+reclaimShort = entryQualityShort >= 2 ? strongReclaimShort : basicReclaimShort
+
+// V61.7: two-bar confirmation after sweep. Sweep alone is not an entry; it must reclaim with directional close.
+longSweepContext = eqLowSweep or liqSweepLowSMC or low[1] <= longEW3 or low[1] <= longDeep
+shortSweepContext = eqHighSweep or liqSweepHighSMC or high[1] >= shortEW3 or high[1] >= shortDeep
+longSweepConfirmOK = not useTwoBarSweepConfirm or not longSweepContext or (close > close[1] and close > longEW1 and clv >= 0.60 and close > open)
+shortSweepConfirmOK = not useTwoBarSweepConfirm or not shortSweepContext or (close < close[1] and close < shortEW1 and clv <= 0.40 and close < open)
+
+longRR = (longTP1 - longEW1) / math.max(longEW1 - longSL, syminfo.mintick)
+shortRR = (shortEW1 - shortTP1) / math.max(shortSL - shortEW1, syminfo.mintick)
+longDirectionalPriceOK = close >= emaSlow or validBullBreakout or continuationLong or liqBullReclaim or microBullOverride
+shortDirectionalPriceOK = close <= emaSlow or validBearBreakout or continuationShort or liqBearReclaim or microBearOverride
+longDirectionOK = planLong and longConf >= minConf and consensusLongOK and structureLongOK and longDirectionalPriceOK and not smartInvalidLong and not longManipulationBlock and not longKill and not (blockCounterTrend and shortScore > longScore)
+shortDirectionOK = planShort and shortConf >= minConf and consensusShortOK and structureShortOK and shortDirectionalPriceOK and not smartInvalidShort and not shortManipulationBlock and not shortKill and not (blockCounterTrend and longScore > shortScore)
+longProtectionOK = not flowTrapBlock and not isTrap and not cooldownTrap and not bullTrapNow and not liquidityRiskLong and not distributionRisk and not stealthDistribution and not longManipulationBlock and not longKill and not longSLTooWide and not shockActive and longSweepConfirmOK and not longTP1BlockedBySR and not longNoChaseRisk and not (useGoldProxyFilter and goldProxyBear and not altLongReversalOK)
+shortProtectionOK = not flowTrapBlock and not isTrap and not cooldownTrap and not bearTrapNow and not liquidityRiskShort and not accumulationRisk and not stealthAccumulation and not shortManipulationBlock and not shortKill and not shortSLTooWide and not shockActive and shortSweepConfirmOK and not shortTP1BlockedBySR and not shortNoChaseRisk and not (useGoldProxyFilter and goldProxyBull and not altShortReversalOK)
+longSignal = longDirectionOK and entryTouchedLong and reclaimLong and longRR >= minRRTrade and longTP1Prob >= minTP1Prob and longTP2Prob >= minTP2Prob and longProtectionOK
+shortSignal = shortDirectionOK and entryTouchedShort and reclaimShort and shortRR >= minRRTrade and shortTP1Prob >= minTP1Prob and shortTP2Prob >= minTP2Prob and shortProtectionOK
+signalDir = longSignal ? "BELI" : shortSignal ? "JUAL" : "TUNGGU"
+putusan = signalDir == "TUNGGU" ? "NO TRADE" : "OK"
+failReason = altChaos ? "GOLD NEWS/WICK CHAOS" : planLong and useGoldProxyFilter and goldProxyBear and not altLongReversalOK ? "XAU PROXY BEAR" : planShort and useGoldProxyFilter and goldProxyBull and not altShortReversalOK ? "XAU PROXY BULL" : flowTrapBlock ? "GOLD LOW FLOW WICK TRAP" : isTrap or cooldownTrap ? "TRAP" : shockActive ? "SHOCK FREEZE" : planLong and longKill ? "LONG KILL" : planShort and shortKill ? "SHORT KILL" : trendDir == "SIDEWAYS" ? "NO DIRECTION" : planLong and not consensusLongOK ? "M1/M5/M15 CONFLICT" : planShort and not consensusShortOK ? "M1/M5/M15 CONFLICT" : planLong and not entryTouchedLong ? "WAIT EW" : planShort and not entryTouchedShort ? "WAIT EW" : planLong and not reclaimLong ? "WAIT RECLAIM" : planShort and not reclaimShort ? "WAIT RECLAIM" : planLong and not longSweepConfirmOK ? "WAIT SWEEP CONFIRM" : planShort and not shortSweepConfirmOK ? "WAIT SWEEP CONFIRM" : planLong and longRR < minRRTrade ? "RR LOW" : planShort and shortRR < minRRTrade ? "RR LOW" : planLong and longTP1Prob < minTP1Prob ? "TP1 LOW" : planShort and shortTP1Prob < minTP1Prob ? "TP1 LOW" : planLong and longTP2Prob < minTP2Prob ? "TP2 LOW" : planShort and shortTP2Prob < minTP2Prob ? "TP2 LOW" : planLong and longTP1BlockedBySR ? "TP BLOCKED" : planShort and shortTP1BlockedBySR ? "TP BLOCKED" : planLong and longNoChaseRisk ? "NO CHASE" : planShort and shortNoChaseRisk ? "NO CHASE" : planLong and longSLTooWide ? "SL WIDE" : planShort and shortSLTooWide ? "SL WIDE" : "WAIT"
+tradeScoreRaw = int(math.round(f_clamp((planLong ? longConf : planShort ? shortConf : math.max(longConf, shortConf)) + (entryTouchedLong or entryTouchedShort ? 8 : -8) + (isTrap or cooldownTrap ? -20 : 5) + (shockActive ? -25 : 0) + (antiChop ? -12 : 4) + ((planLong and longKill) or (planShort and shortKill) ? -18 : 0) + ((planLong and longTP1Prob >= minTP1Prob) or (planShort and shortTP1Prob >= minTP1Prob) ? 6 : -8) + ((planLong and consensusLongOK) or (planShort and consensusShortOK) ? 5 : -10) + ((planLong and (longTP1BlockedBySR or longNoChaseRisk)) or (planShort and (shortTP1BlockedBySR or shortNoChaseRisk)) ? -16 : 0), 0, 100)))
+tradeScore = trendDir == "SIDEWAYS" ? math.min(tradeScoreRaw, 54) : (regimeClass == "MIXED" or mtfDominantBias == "SIDEWAYS" ? math.min(tradeScoreRaw, 60) : tradeScoreRaw)
+status = putusan == "OK" ? "VALID" : failReason
+
+// V61.5 Full Panel Display Logic.
+// Trading validation remains strict, but the panel must always show the calculated EW/SL/TP numbers.
+// When the official trade state is NO TRADE, levels are still displayed from the dominant bias side
+// so the user can audit the next possible long/short map without seeing blank fields.
+strongestBiasIsLong = longConf >= shortConf
+biasDisplay = strongestBiasIsLong ? "LONG" : "SHORT"
+biasPercent = strongestBiasIsLong ? longConf : shortConf
+tradeBiasDisplay = signalDir == "BELI" ? "LONG" : signalDir == "JUAL" ? "SHORT" : trendDir == "BELI" ? "WAIT LONG" : trendDir == "JUAL" ? "WAIT SHORT" : "NO TRADE"
+// V61.7 user-requested simple bias line: show only the strongest map side and its percentage.
+biasFullText = "Bias : MAP " + biasDisplay + " " + str.tostring(biasPercent) + "%"
+confText = strongestBiasIsLong ? "BELI " + str.tostring(longConf) + "%" : "JUAL " + str.tostring(shortConf) + "%"
+displayLongPlan = strongestBiasIsLong
+activeLong = displayLongPlan
+activeShort = not displayLongPlan
+activePlan = true
+ew1 = activeLong ? longEW1 : shortEW1
+ew2 = activeLong ? longEW2 : shortEW2
+ew3 = activeLong ? longEW3 : shortEW3
+deepAdd = activeLong ? longDeep : shortDeep
+sl = activeLong ? longSL : shortSL
+tp1 = activeLong ? longTP1 : shortTP1
+tp2 = activeLong ? longTP2 : shortTP2
+tp3 = activeLong ? longTP3 : shortTP3
+activeEntryQuality = activeLong ? entryQualityLong : entryQualityShort
+activeTP1Prob = activeLong ? longTP1Prob : shortTP1Prob
+activeTP2Prob = activeLong ? longTP2Prob : shortTP2Prob
+activeTP3Prob = activeLong ? longTP3Prob : shortTP3Prob
+activeSLAtr = activeLong ? (atr > 0.0 ? (ew1 - sl) / atr : na) : (atr > 0.0 ? (sl - ew1) / atr : na)
+activeSLTooWide = activeLong ? longSLTooWide : shortSLTooWide
+activeDeepStatus = activeLong ? (close < longDeep ? "INVALID" : low <= longDeep and deepReclaimLong ? "RECLAIM OK" : low <= longDeep ? "DANGER" : "MAP") : (close > shortDeep ? "INVALID" : high >= shortDeep and deepReclaimShort ? "RECLAIM OK" : high >= shortDeep ? "DANGER" : "MAP")
+activeEW1Status = activeEntryQuality >= 1 ? "TOUCHED" : "MAP"
+activeEW2Status = activeEntryQuality >= 2 ? "VALID" : "WAIT"
+activeEW3Status = activeEntryQuality >= 3 ? "BEST" : "WAIT"
+activeTP3Status = regimeSideways ? "LOW PROB" : activeTP3Prob >= minTP1Prob ? "OK" : "OPTIONAL"
+
+//==================================================
+// CLEAN / PRO / DEBUG VISUAL MODE
+//==================================================
+// Important: these flags control only chart visualization.
+// All trading engines above remain active and continue to feed the panel, score, direction, EW, SL, TP, trap, S/R and OB calculations.
+showClean = displayMode == "CLEAN"
+showPro = displayMode == "PRO" or displayMode == "DEBUG"
+showDebug = displayMode == "DEBUG"
+showCleanOrPro = displayMode == "CLEAN" or displayMode == "PRO"
+showHistoricalDebug = showLines and showDebug
+showCompactLevels = showLines and showCleanOrPro
+showCompactMarkers = showMarkers and showCleanOrPro
+showDebugMarkers = showMarkers and showDebug
+
+//==================================================
+// PLOTS
+//==================================================
+// DEBUG mode keeps the historical plots for tester/programmer review.
+// CLEAN and PRO modes hide historical line trails and show only the latest actionable levels.
+plot(showHistoricalDebug ? ew1 : na, "EW1", color=color.new(color.yellow, 0), linewidth=1, style=plot.style_linebr)
+plot(showHistoricalDebug ? ew2 : na, "EW2", color=color.new(color.yellow, 0), linewidth=1, style=plot.style_linebr)
+plot(showHistoricalDebug ? ew3 : na, "EW3", color=color.new(color.orange, 0), linewidth=1, style=plot.style_linebr)
+plot(showHistoricalDebug ? deepAdd : na, "DEEP ADD", color=color.new(color.orange, 0), linewidth=2, style=plot.style_linebr)
+plot(showHistoricalDebug ? sl : na, "STOP LOSS PROTECTED", color=color.new(color.red, 0), linewidth=1, style=plot.style_linebr)
+plot(showHistoricalDebug ? tp1 : na, "TP1 REALISTIC", color=color.new(color.green, 45), linewidth=1, style=plot.style_linebr)
+plot(showHistoricalDebug ? tp2 : na, "TP2 REALISTIC", color=color.new(color.green, 20), linewidth=1, style=plot.style_linebr)
+plot(showHistoricalDebug ? tp3 : na, "TP3 OPTIONAL", color=color.new(color.green, 0), linewidth=1, style=plot.style_linebr)
+plot(showHistoricalDebug and showSRLevels ? srSupport : na, "SUPPORT CLUSTER", color=color.new(color.aqua, 0), linewidth=2, style=plot.style_linebr)
+plot(showHistoricalDebug and showSRLevels ? srResistance : na, "RESISTANCE CLUSTER", color=color.new(color.fuchsia, 0), linewidth=2, style=plot.style_linebr)
+
+plotshape((showDebugMarkers or (showCompactMarkers and barstate.islast)) and longSignal, title="LONG", style=shape.triangleup, location=location.belowbar, color=color.new(color.green, 0), size=size.small, text="")
+plotshape((showDebugMarkers or (showCompactMarkers and barstate.islast)) and shortSignal, title="SHORT", style=shape.triangledown, location=location.abovebar, color=color.new(color.red, 0), size=size.small, text="")
+
+// CLEAN/PRO compact current-level lines. These are visual only and do not change calculations.
+var line lEW1 = na
+var line lEW2 = na
+var line lEW3 = na
+var line lDeep = na
+var line lSL = na
+var line lTP1 = na
+var line lTP2 = na
+var line lTP3 = na
+var line lSup = na
+var line lRes = na
+var label labEW1 = na
+var label labEW2 = na
+var label labEW3 = na
+var label labDeep = na
+var label labSL = na
+var label labTP1 = na
+var label labTP2 = na
+var label labTP3 = na
+var label labSup = na
+var label labRes = na
+
+if barstate.islast
+    if not na(lEW1)
+        line.delete(lEW1)
+    if not na(lEW2)
+        line.delete(lEW2)
+    if not na(lEW3)
+        line.delete(lEW3)
+    if not na(lDeep)
+        line.delete(lDeep)
+    if not na(lSL)
+        line.delete(lSL)
+    if not na(lTP1)
+        line.delete(lTP1)
+    if not na(lTP2)
+        line.delete(lTP2)
+    if not na(lTP3)
+        line.delete(lTP3)
+    if not na(lSup)
+        line.delete(lSup)
+    if not na(lRes)
+        line.delete(lRes)
+    if not na(labEW1)
+        label.delete(labEW1)
+    if not na(labEW2)
+        label.delete(labEW2)
+    if not na(labEW3)
+        label.delete(labEW3)
+    if not na(labDeep)
+        label.delete(labDeep)
+    if not na(labSL)
+        label.delete(labSL)
+    if not na(labTP1)
+        label.delete(labTP1)
+    if not na(labTP2)
+        label.delete(labTP2)
+    if not na(labTP3)
+        label.delete(labTP3)
+    if not na(labSup)
+        label.delete(labSup)
+    if not na(labRes)
+        label.delete(labRes)
+    if showCompactLevels and activePlan
+        int x1 = bar_index
+        int x2 = bar_index + 25
+        int xl = bar_index + 26
+        lEW1 := line.new(x1, ew1, x2, ew1, color=color.new(color.yellow, 0), width=1)
+        lEW2 := line.new(x1, ew2, x2, ew2, color=color.new(color.yellow, 0), width=1)
+        lEW3 := line.new(x1, ew3, x2, ew3, color=color.new(color.orange, 0), width=1)
+        lDeep := line.new(x1, deepAdd, x2, deepAdd, color=color.new(color.orange, 0), width=1)
+        lSL := line.new(x1, sl, x2, sl, color=color.new(color.red, 0), width=2)
+        lTP1 := line.new(x1, tp1, x2, tp1, color=color.new(color.green, 45), width=1)
+        lTP2 := line.new(x1, tp2, x2, tp2, color=color.new(color.green, 25), width=1)
+        lTP3 := line.new(x1, tp3, x2, tp3, color=color.new(color.green, 0), width=2)
+        labEW1 := label.new(xl, ew1, "EW1 " + f_fmt_safe(ew1), style=label.style_label_left, textcolor=color.black, color=color.new(color.yellow, 0), size=size.tiny)
+        labEW2 := label.new(xl, ew2, "EW2 " + f_fmt_safe(ew2), style=label.style_label_left, textcolor=color.black, color=color.new(color.yellow, 15), size=size.tiny)
+        labEW3 := label.new(xl, ew3, "EW3 " + f_fmt_safe(ew3), style=label.style_label_left, textcolor=color.black, color=color.new(color.orange, 0), size=size.tiny)
+        labDeep := label.new(xl, deepAdd, "DEEP " + f_fmt_safe(deepAdd), style=label.style_label_left, textcolor=color.black, color=color.new(color.orange, 15), size=size.tiny)
+        labSL := label.new(xl, sl, "SL " + f_fmt_safe(sl), style=label.style_label_left, textcolor=color.white, color=color.new(color.red, 0), size=size.tiny)
+        labTP1 := label.new(xl, tp1, "TP1 " + f_fmt_safe(tp1), style=label.style_label_left, textcolor=color.black, color=color.new(color.green, 45), size=size.tiny)
+        labTP2 := label.new(xl, tp2, "TP2 " + f_fmt_safe(tp2), style=label.style_label_left, textcolor=color.black, color=color.new(color.green, 25), size=size.tiny)
+        labTP3 := label.new(xl, tp3, "TP3 " + f_fmt_safe(tp3), style=label.style_label_left, textcolor=color.black, color=color.new(color.green, 0), size=size.tiny)
+        if showSRLevels
+            lSup := line.new(x1, srSupport, x2, srSupport, color=color.new(color.aqua, 0), width=2)
+            lRes := line.new(x1, srResistance, x2, srResistance, color=color.new(color.fuchsia, 0), width=2)
+            string supTxt = displayMode == "PRO" ? "SUPPORT " + str.tostring(srSupportStrength) + " | " + f_fmt(srSupport) : "SUPPORT " + f_fmt(srSupport)
+            string resTxt = displayMode == "PRO" ? "RESISTANCE " + str.tostring(srResistanceStrength) + " | " + f_fmt(srResistance) : "RESISTANCE " + f_fmt(srResistance)
+            labSup := label.new(xl, srSupport, supTxt, style=label.style_label_left, textcolor=color.black, color=color.new(color.aqua, 10), size=size.tiny)
+            labRes := label.new(xl, srResistance, resTxt, style=label.style_label_left, textcolor=color.black, color=color.new(color.fuchsia, 10), size=size.tiny)
+
+// BOS/CHOCH labels: DEBUG shows all historical events; CLEAN/PRO shows only the latest event.
+var int lastStructBar = na
+var float lastStructPrice = na
+var string lastStructText = ""
+var color lastStructColor = na
+var bool lastStructUp = true
+if showBOSCHOCHLabels
+    if bosBullEvent and not chochBullEvent
+        lastStructBar := bar_index
+        lastStructPrice := low
+        lastStructText := "BOS\nBULL"
+        lastStructColor := color.new(color.green, 15)
+        lastStructUp := true
+    if bosBearEvent and not chochBearEvent
+        lastStructBar := bar_index
+        lastStructPrice := high
+        lastStructText := "BOS\nBEAR"
+        lastStructColor := color.new(color.red, 15)
+        lastStructUp := false
+    if chochBullEvent
+        lastStructBar := bar_index
+        lastStructPrice := low
+        lastStructText := "CHOCH\nBULL"
+        lastStructColor := color.new(color.lime, 0)
+        lastStructUp := true
+    if chochBearEvent
+        lastStructBar := bar_index
+        lastStructPrice := high
+        lastStructText := "CHOCH\nBEAR"
+        lastStructColor := color.new(color.orange, 0)
+        lastStructUp := false
+
+if showDebugMarkers and showBOSCHOCHLabels and bosBullEvent and not chochBullEvent
+    label.new(bar_index, low, "BOS\nBULL", style=label.style_label_up, textcolor=color.white, color=color.new(color.green, 15), size=size.tiny)
+if showDebugMarkers and showBOSCHOCHLabels and bosBearEvent and not chochBearEvent
+    label.new(bar_index, high, "BOS\nBEAR", style=label.style_label_down, textcolor=color.white, color=color.new(color.red, 15), size=size.tiny)
+if showDebugMarkers and showBOSCHOCHLabels and chochBullEvent
+    label.new(bar_index, low, "CHOCH\nBULL", style=label.style_label_up, textcolor=color.black, color=color.new(color.lime, 0), size=size.tiny)
+if showDebugMarkers and showBOSCHOCHLabels and chochBearEvent
+    label.new(bar_index, high, "CHOCH\nBEAR", style=label.style_label_down, textcolor=color.black, color=color.new(color.orange, 0), size=size.tiny)
+
+var label compactStructLabel = na
+if showCompactMarkers and showBOSCHOCHLabels and barstate.islast
+    if not na(compactStructLabel)
+        label.delete(compactStructLabel)
+    if not na(lastStructBar) and not na(lastStructPrice)
+        compactStructLabel := label.new(lastStructBar, lastStructPrice, lastStructText, style=lastStructUp ? label.style_label_up : label.style_label_down, textcolor=color.black, color=lastStructColor, size=size.tiny)
+
+// Order block boxes: visual only. CLEAN/PRO hide invalid OB; DEBUG can show invalid status for testing.
+var box bullOBBox = na
+var box bearOBBox = na
+bool obVisualOn = showOBBoxes and (showCleanOrPro or showDebug)
+if obVisualOn and bullOBSource and not na(bullOBLow) and not na(bullOBHigh)
+    if not na(bullOBBox)
+        box.delete(bullOBBox)
+    bullOBBox := box.new(bar_index - 1, bullOBHigh, bar_index + obExtendBars, bullOBLow, bgcolor=color.new(color.green, showClean ? 92 : 88), border_color=color.new(color.green, 25), text=showClean ? "BULL OB" : "BULL OB " + str.tostring(bullOBStrength), text_color=color.new(color.green, 0), text_size=size.tiny)
+if obVisualOn and bearOBSource and not na(bearOBLow) and not na(bearOBHigh)
+    if not na(bearOBBox)
+        box.delete(bearOBBox)
+    bearOBBox := box.new(bar_index - 1, bearOBHigh, bar_index + obExtendBars, bearOBLow, bgcolor=color.new(color.red, showClean ? 92 : 88), border_color=color.new(color.red, 25), text=showClean ? "BEAR OB" : "BEAR OB " + str.tostring(bearOBStrength), text_color=color.new(color.red, 0), text_size=size.tiny)
+if obVisualOn and not na(bullOBBox)
+    if bullOBInvalid and not showDebug
+        box.delete(bullOBBox)
+        bullOBBox := na
+    else
+        box.set_right(bullOBBox, bar_index + obExtendBars)
+        box.set_bgcolor(bullOBBox, bullOBInvalid ? color.new(color.gray, 88) : bullOBMitigated ? color.new(color.green, showClean ? 90 : 82) : color.new(color.green, showClean ? 92 : 88))
+        box.set_text(bullOBBox, bullOBInvalid ? "BULL OB INVALID" : bullOBMitigated ? (showClean ? "BULL OB MITIGATED" : "BULL OB MITIGATED " + str.tostring(bullOBStrength)) : (showClean ? "BULL OB" : "BULL OB " + str.tostring(bullOBStrength)))
+if obVisualOn and not na(bearOBBox)
+    if bearOBInvalid and not showDebug
+        box.delete(bearOBBox)
+        bearOBBox := na
+    else
+        box.set_right(bearOBBox, bar_index + obExtendBars)
+        box.set_bgcolor(bearOBBox, bearOBInvalid ? color.new(color.gray, 88) : bearOBMitigated ? color.new(color.red, showClean ? 90 : 82) : color.new(color.red, showClean ? 92 : 88))
+        box.set_text(bearOBBox, bearOBInvalid ? "BEAR OB INVALID" : bearOBMitigated ? (showClean ? "BEAR OB MITIGATED" : "BEAR OB MITIGATED " + str.tostring(bearOBStrength)) : (showClean ? "BEAR OB" : "BEAR OB " + str.tostring(bearOBStrength)))
+
+// Signal labels: DEBUG shows historical signals; CLEAN/PRO show current bar only.
+if (showDebugMarkers or (showCompactMarkers and barstate.islast)) and longSignal
+    label.new(bar_index, low, f_fmt(close) + "\nBELI", style=label.style_label_up, textcolor=color.blue, color=color.new(color.green, 70), size=size.small)
+if (showDebugMarkers or (showCompactMarkers and barstate.islast)) and shortSignal
+    label.new(bar_index, high, f_fmt(close) + "\nJUAL", style=label.style_label_down, textcolor=color.blue, color=color.new(color.red, 70), size=size.small)
+
+// Yellow NEXT arrow on the current candidate candle only.
+nextIsLong = longConf >= shortConf
+var label nextTradeLabel = na
+if showMarkers and barstate.islast
+    if not na(nextTradeLabel)
+        label.delete(nextTradeLabel)
+    string nextText = nextIsLong ? "NEXT BELI" : "NEXT JUAL"
+    nextTradeLabel := label.new(bar_index, nextIsLong ? low : high, nextText, style=nextIsLong ? label.style_label_up : label.style_label_down, textcolor=color.black, color=color.new(color.yellow, 0), size=size.small)
+
+alertcondition(longSignal, title="GOLD PAXG/XAUT V63 Long", message="GOLD PAXG/XAUT V63: LAYAK BELI")
+alertcondition(shortSignal, title="GOLD PAXG/XAUT V63 Short", message="GOLD PAXG/XAUT V63: LAYAK JUAL")
+alertcondition(isTrap, title="BTC V60 PRO Trap", message="BTC V60 PRO: Trap / stop hunt detected")
+
+//==================================================
+// PANEL - RESTORED V58.2 LAYOUT
+//==================================================
+f_2(n) =>
+    n < 10 ? "0" + str.tostring(n) : str.tostring(n)
+
+f_mon(m) =>
+    switch m
+        1  => "Jan"
+        2  => "Feb"
+        3  => "Mar"
+        4  => "Apr"
+        5  => "Mei"
+        6  => "Jun"
+        7  => "Jul"
+        8  => "Agu"
+        9  => "Sep"
+        10 => "Okt"
+        11 => "Nov"
+        12 => "Des"
+        => "Des"
+
+f_valid_ts(ts) =>
+    not na(ts) and ts > 946684800000
+
+f_ts_wib(ts) =>
+    f_valid_ts(ts) ? str.tostring(dayofmonth(ts, WIB)) + " " + f_mon(month(ts, WIB)) + " " + f_2(hour(ts, WIB)) + ":" + f_2(minute(ts, WIB)) : "ETA INVALID"
+
+f_tf_millis() =>
+    f_safe_tf_millis()
+
+// ETA must remain visible even when trade is not executable.
+// All timestamps are forced into the future; no panel time may point to a passed period.
+f_future_anchor(tfMs) =>
+    int anchor = f_valid_ts(timenow) ? timenow : time
+    if f_valid_ts(time) and tfMs > 0
+        int elapsed = anchor <= time ? 0 : int(math.ceil((anchor - time) / tfMs))
+        int safeElapsed = math.max(elapsed, 0)
+        int nextFromBar = time + safeElapsed * tfMs
+        nextFromBar <= anchor ? nextFromBar + tfMs : nextFromBar
+    else
+        anchor + math.max(tfMs, 3600000)
+
+f_eta_txt(level, origin, enabled) =>
+    float movePerBarRaw = ta.sma(math.abs(close - close[1]), 14)
+    float movePerBar = math.max(nz(movePerBarRaw, atr), syminfo.mintick)
+    int tfMs = f_tf_millis()
+    bool validInput = not na(level) and not na(origin) and not na(movePerBar) and movePerBar > 0 and tfMs > 0 and f_valid_ts(time)
+    if not validInput
+        "ETA INVALID"
+    else
+        float barsRaw = math.abs(level - origin) / movePerBar
+        barsRaw := f_clamp(barsRaw, 1.0, 500.0)
+        int barsLo = math.max(1, int(math.floor(barsRaw * 0.85)))
+        int barsHi = math.max(barsLo, int(math.ceil(barsRaw * 1.20)))
+        int baseTs = f_future_anchor(tfMs)
+        int t1 = baseTs + int(math.max(barsLo - 1, 0) * tfMs)
+        int t2 = baseTs + int(math.max(barsHi - 1, 0) * tfMs)
+        if f_valid_ts(t1) and f_valid_ts(timenow) and t1 <= timenow
+            t1 := t1 + tfMs
+            t2 := math.max(t2 + tfMs, t1)
+        f_ts_wib(t1) + " - " + f_ts_wib(t2)
+
+f_eta_exp_txt(level, origin, enabled) =>
+    float movePerBarRaw = ta.sma(math.abs(close - close[1]), 14)
+    float movePerBar = math.max(nz(movePerBarRaw, atr), syminfo.mintick)
+    int tfMs = f_tf_millis()
+    bool validInput = not na(level) and not na(origin) and not na(movePerBar) and movePerBar > 0 and tfMs > 0 and f_valid_ts(time)
+    if not validInput
+        "EXP INVALID"
+    else
+        float barsRaw = math.abs(level - origin) / movePerBar
+        barsRaw := f_clamp(barsRaw, 1.0, 500.0)
+        int barsLo = math.max(1, int(math.floor(barsRaw * 0.85)))
+        int barsHi = math.max(barsLo, int(math.ceil(barsRaw * 1.20)))
+        int baseTs = f_future_anchor(tfMs)
+        int t1 = baseTs + int(math.max(barsLo - 1, 0) * tfMs)
+        int t2 = baseTs + int(math.max(barsHi - 1, 0) * tfMs)
+        if f_valid_ts(t1) and f_valid_ts(timenow) and t1 <= timenow
+            t1 := t1 + tfMs
+            t2 := math.max(t2 + tfMs, t1)
+        "EXP " + f_ts_wib(t2)
+
+f_panel_size() => size.small
+
+f_panel_cell(_tbl, _c, _r, _txt, _bg, _tc) =>
+    table.cell(_tbl, _c, _r, _txt, bgcolor=_bg, text_color=_tc, text_size=f_panel_size())
+
+f_panel_row(_tbl, _r, _left, _right, _bgRight) =>
+    f_panel_cell(_tbl, 0, _r, _left, color.rgb(31, 40, 56), color.white)
+    f_panel_cell(_tbl, 1, _r, _right, _bgRight, color.rgb(43, 51, 63))
+
+var table panel = table.new(position.top_right, 2, 22, frame_color=color.rgb(6, 95, 170), frame_width=1, border_color=color.rgb(230, 238, 247), border_width=1)
+
+if showPanel and barstate.islast
+    panelBlueDark = color.rgb(31, 40, 56)
+    panelHeader  = color.rgb(148, 163, 184)
+    panelRed     = color.rgb(248, 64, 67)
+    panelPink    = color.rgb(248, 173, 178)
+    panelGreen1  = color.rgb(187, 247, 208)
+    panelGreen2  = color.rgb(134, 239, 172)
+    panelGreen3  = color.rgb(74, 222, 128)
+    panelMint    = color.rgb(167, 243, 208)
+    panelBlue    = color.rgb(16, 185, 129)
+    panelLight   = color.rgb(226, 232, 240)
+    panelEW      = color.rgb(218, 226, 247)
+    panelOrange  = color.rgb(252, 211, 157)
+    panelYellow  = color.rgb(254, 249, 195)
+    scoreBg = tradeScore >= 70 ? panelGreen2 : tradeScore >= 55 ? panelGreen1 : panelRed
+    dirTxt = biasFullText
+    minConfTxt = str.tostring(minConf)
+    confVal = longConf >= shortConf ? "BELI " + str.tostring(longConf) + "%" : "JUAL " + str.tostring(shortConf) + "%"
+    tradeEnabled = tradeScore >= minConf and signalDir != "TUNGGU" and not isTrap and not cooldownTrap
+    disabledTxt = ""
+    entryIdeal = ew1 * 0.10 + ew2 * 0.35 + ew3 * 0.55
+    reclaim = activeLong ? ew1 - ((ew1 - ew3) * 0.35) : ew1 + ((ew3 - ew1) * 0.35)
+    entryTimeTxt = f_eta_txt(entryIdeal, close, true)
+    entryExpTxt = f_eta_exp_txt(entryIdeal, close, true)
+    f_panel_row(panel, 0,  "PUTUSAN",     putusan, panelHeader)
+    f_panel_row(panel, 1,  "TRADE SCORE", str.tostring(tradeScore) + "/100 | " + status, scoreBg)
+    f_panel_row(panel, 2,  "NEXT TRADE",  entryTimeTxt + " | " + entryExpTxt, panelLight)
+    f_panel_row(panel, 3,  "BIAS",        dirTxt, panelGreen2)
+    f_panel_row(panel, 4,  "CONF",        confVal + " | MIN " + minConfTxt + "%", panelGreen2)
+    f_panel_row(panel, 5,  "SESI",        sessPanelText + " | " + altProfileResolved + " | XAU " + goldProxyBias, panelBlue)
+    flowInterpretFinal = altChaos ? "Waspada wick off / trap" : altFakeImpulse ? "Waspada stop hunt" : flowTrapBlock ? "Waspada wick off / trap" : goldProxyBear and activeLong ? "Waspada XAUUSD melawan long" : goldProxyBull and activeShort ? "Waspada XAUUSD melawan short" : volShock and wickRatio >= 0.55 ? "Waspada stop hunt" : flowInterpretBase
+    flowBg = flowInterpretFinal == "Sepi, rawan fake move" ? panelPink : flowInterpretFinal == "Aktif, TP lebih mungkin tercapai" ? panelGreen2 : flowInterpretFinal == "Waspada stop hunt" or flowInterpretFinal == "Waspada wick off / trap" or str.contains(flowInterpretFinal, "XAUUSD") ? panelOrange : panelYellow
+    f_panel_row(panel, 6,  "FLOW", flowInterpretFinal, flowBg)
+    f_panel_row(panel, 7,  "EW1",         f_fmt_safe(ew1) + " | " + activeEW1Status, panelEW)
+    f_panel_row(panel, 8,  "EW2",         f_fmt_safe(ew2) + " | " + activeEW2Status, panelEW)
+    f_panel_row(panel, 9,  "EW3",         f_fmt_safe(ew3) + " | " + activeEW3Status, panelOrange)
+    f_panel_row(panel, 10, "DEEP RISK",   f_fmt_safe(deepAdd) + " | " + activeDeepStatus, panelOrange)
+    f_panel_row(panel, 11, "TRAP GATE",   shockActive ? "SHOCK FREEZE " + str.tostring(shockFreeze) + " BAR" : flowTrapBlock ? "GOLD LOW FLOW WICK TRAP" : isTrap or cooldownTrap ? trapType : activeLong and longKill ? "LONG KILL" : activeShort and shortKill ? "SHORT KILL" : activeLong and longManipulationBlock ? "LONG BLOCK" : activeShort and shortManipulationBlock ? "SHORT BLOCK" : "TRAP CLEAR | " + smcTrendText, panelGreen1)
+    f_panel_row(panel, 12, "ENTRY IDEAL", f_fmt_safe(entryIdeal), panelLight)
+    f_panel_row(panel, 13, "WAKTU ENTRY", entryTimeTxt + " | " + entryExpTxt, panelLight)
+    f_panel_row(panel, 14, "SL",          f_fmt_safe(sl) + " | " + str.tostring(activeSLAtr, "#.##") + " ATR" + (activeSLTooWide ? " WIDE" : ""), panelPink)
+    f_panel_row(panel, 15, "TP1",         f_fmt_safe(tp1) + " | " + str.tostring(activeTP1Prob) + "%" + disabledTxt, panelGreen1)
+    f_panel_row(panel, 16, "TP2",         f_fmt_safe(tp2) + " | " + str.tostring(activeTP2Prob) + "%" + disabledTxt, panelGreen2)
+    f_panel_row(panel, 17, "TP3",         f_fmt_safe(tp3) + " | " + str.tostring(activeTP3Prob) + "% " + activeTP3Status + disabledTxt, panelGreen3)
+    f_panel_row(panel, 18, "ETA TP1",     f_eta_txt(tp1, close, tradeEnabled), panelGreen1)
+    f_panel_row(panel, 19, "ETA TP2",     f_eta_txt(tp2, close, tradeEnabled), panelGreen2)
+    f_panel_row(panel, 20, "ETA TP3",     f_eta_txt(tp3, close, tradeEnabled), panelGreen3)
+    f_panel_row(panel, 21, "RECLAIM",     f_fmt_safe(reclaim), panelYellow)

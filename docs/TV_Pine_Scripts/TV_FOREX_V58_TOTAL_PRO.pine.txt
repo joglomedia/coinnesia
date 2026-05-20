@@ -1,0 +1,443 @@
+//@version=6
+indicator("FOREX V58 TOTAL PRO - Realistic FX Prediction Panel", overlay=true, max_lines_count=300, max_labels_count=300, max_bars_back=5000, dynamic_requests=true)
+
+//==================================================
+// GROUPS
+//==================================================
+groupCore      = "1. Inti Forex"
+groupTrend     = "2. Trend / Momentum"
+groupStruct    = "3. Struktur Market"
+groupSession   = "4. Sesi Forex"
+groupRisk      = "5. Risk / Entry / TP SL"
+groupFilter    = "6. Filter Kualitas"
+groupUI        = "7. UI / Panel"
+groupAlerts    = "8. Alerts"
+
+//==================================================
+// INPUTS
+//==================================================
+emaFastLen     = input.int(20, "EMA Cepat", minval=1, group=groupCore)
+emaMidLen      = input.int(50, "EMA Menengah", minval=2, group=groupCore)
+emaTrendLen    = input.int(200, "EMA Trend Besar", minval=20, group=groupCore)
+atrLen         = input.int(14, "ATR Length", minval=1, group=groupCore)
+rsiLen         = input.int(14, "RSI Length", minval=2, group=groupCore)
+
+htf1           = input.timeframe("240", "HTF Bias 1", group=groupTrend)
+htf2           = input.timeframe("D", "HTF Bias 2", group=groupTrend)
+useHTF1        = input.bool(true, "Gunakan HTF 1", group=groupTrend)
+useHTF2        = input.bool(true, "Gunakan HTF 2", group=groupTrend)
+adxLen         = input.int(14, "ADX Length", minval=5, group=groupTrend)
+adxSmooth      = input.int(14, "ADX Smoothing", minval=5, group=groupTrend)
+minADX         = input.float(16.0, "Minimum ADX Trend", minval=1.0, maxval=60.0, step=0.5, group=groupTrend)
+maxADX         = input.float(55.0, "Maksimum ADX Exhaustion", minval=10.0, maxval=100.0, step=0.5, group=groupTrend)
+macdFast       = input.int(12, "MACD Fast", minval=1, group=groupTrend)
+macdSlow       = input.int(26, "MACD Slow", minval=2, group=groupTrend)
+macdSignal     = input.int(9, "MACD Signal", minval=1, group=groupTrend)
+
+pivotLeft      = input.int(3, "Pivot Kiri", minval=1, maxval=20, group=groupStruct)
+pivotRight     = input.int(3, "Pivot Kanan", minval=1, maxval=20, group=groupStruct)
+structureLen   = input.int(24, "Lookback Struktur", minval=8, maxval=200, group=groupStruct)
+liqLookback    = input.int(20, "Lookback Sweep Liquidity", minval=5, maxval=150, group=groupStruct)
+equalTolATR    = input.float(0.08, "Toleransi Equal High/Low ATR", minval=0.01, maxval=0.50, step=0.01, group=groupStruct)
+
+sessionTz      = input.string("Asia/Jakarta", "Timezone Session", group=groupSession)
+useSession     = input.bool(true, "Filter Sesi Trading", group=groupSession)
+asiaSession    = input.session("0600-1400", "Asia Session WIB", group=groupSession)
+londonSession  = input.session("1400-2200", "London Session WIB", group=groupSession)
+nySession      = input.session("1900-0300", "New York Session WIB", group=groupSession)
+avoidRollover  = input.bool(true, "Hindari Rollover/Spread Melebar", group=groupSession)
+rolloverSess   = input.session("0455-0610", "Zona Rollover WIB", group=groupSession)
+
+tradeDirection = input.string("BOTH", "Arah Sinyal", options=["BOTH", "LONG ONLY", "SHORT ONLY"], group=groupRisk)
+entryMode      = input.string("PULLBACK", "Mode Entry", options=["MARKET", "PULLBACK", "BREAKOUT"], group=groupRisk)
+minScore       = input.int(70, "Minimum Confidence", minval=0, maxval=100, group=groupRisk)
+minScoreGap    = input.int(10, "Minimum Gap Long vs Short", minval=0, maxval=50, group=groupRisk)
+entryATR       = input.float(0.18, "Jarak Entry Pullback ATR", minval=0.00, maxval=3.00, step=0.01, group=groupRisk)
+entryZoneATR   = input.float(0.12, "Lebar Zona Entry ATR", minval=0.01, maxval=1.00, step=0.01, group=groupRisk)
+slATR          = input.float(1.25, "SL Dasar ATR", minval=0.20, maxval=6.00, step=0.05, group=groupRisk)
+slStructATR    = input.float(0.20, "Buffer SL Struktur ATR", minval=0.00, maxval=2.00, step=0.05, group=groupRisk)
+rrTP1          = input.float(0.80, "TP1 RR", minval=0.10, maxval=10.00, step=0.05, group=groupRisk)
+rrTP2          = input.float(1.40, "TP2 RR", minval=0.10, maxval=10.00, step=0.05, group=groupRisk)
+rrTP3          = input.float(2.20, "TP3 RR", minval=0.10, maxval=15.00, step=0.05, group=groupRisk)
+manualSpreadPips = input.float(0.0, "Spread Manual Pips / Buffer Broker", minval=0.0, maxval=50.0, step=0.1, group=groupRisk)
+
+useChopFilter  = input.bool(true, "Blokir Market Choppy", group=groupFilter)
+minRangeATR    = input.float(0.75, "Min Range10 / ATR", minval=0.10, maxval=10.00, step=0.05, group=groupFilter)
+maxAtrPct      = input.float(0.70, "ATR% Maksimum Intraday", minval=0.05, maxval=5.00, step=0.05, group=groupFilter)
+useVolFilter   = input.bool(false, "Gunakan Tick Volume FX", group=groupFilter)
+volLen         = input.int(20, "Volume MA Length", minval=5, maxval=200, group=groupFilter)
+minVolRatio    = input.float(0.70, "Minimum Tick Volume / MA", minval=0.00, maxval=5.00, step=0.05, group=groupFilter)
+blockCounterHTF = input.bool(true, "Blokir Lawan Bias Daily/HTF", group=groupFilter)
+
+showPanel      = input.bool(true, "Tampilkan Panel", group=groupUI)
+showLines      = input.bool(true, "Tampilkan Level Entry/SL/TP", group=groupUI)
+showMarkers    = input.bool(true, "Tampilkan Marker Sinyal", group=groupUI)
+panelPos       = input.string("TOP_RIGHT", "Posisi Panel", options=["TOP_RIGHT", "TOP_LEFT", "BOTTOM_RIGHT", "BOTTOM_LEFT"], group=groupUI)
+panelSize      = input.string("small", "Ukuran Teks Panel", options=["tiny", "small", "normal"], group=groupUI)
+lineForward    = input.int(80, "Panjang Garis ke Depan", minval=10, maxval=500, group=groupUI)
+
+useAlerts      = input.bool(true, "Aktifkan Alert Conditions", group=groupAlerts)
+
+//==================================================
+// FUNCTIONS
+//==================================================
+f_clamp(float x, float lo, float hi) =>
+    math.max(lo, math.min(x, hi))
+
+f_safe_div(float num, float den, float fallback) =>
+    den == 0.0 or na(den) ? fallback : num / den
+
+f_fmt(float x) =>
+    str.tostring(x, format.mintick)
+
+f_pos(string p) =>
+    p == "TOP_LEFT" ? position.top_left : p == "BOTTOM_RIGHT" ? position.bottom_right : p == "BOTTOM_LEFT" ? position.bottom_left : position.top_right
+
+f_size(string s) =>
+    s == "tiny" ? size.tiny : s == "normal" ? size.normal : size.small
+
+f_bool_txt(bool v) =>
+    v ? "YA" : "TIDAK"
+
+f_bias_txt(int b) =>
+    b > 0 ? "BULLISH" : b < 0 ? "BEARISH" : "NETRAL"
+
+f_pip_size() =>
+    string t = syminfo.ticker
+    bool isJpy = str.contains(t, "JPY")
+    bool isXau = str.contains(t, "XAU") or str.contains(t, "GOLD")
+    bool isXag = str.contains(t, "XAG") or str.contains(t, "SILVER")
+    isJpy ? 0.01 : isXau ? 0.10 : isXag ? 0.01 : 0.0001
+
+f_to_pips(float priceDist) =>
+    math.abs(priceDist) / f_pip_size()
+
+f_bias(float c, float eFast, float eMid, float eTrend) =>
+    c > eFast and eFast > eMid and eMid > eTrend ? 1 : c < eFast and eFast < eMid and eMid < eTrend ? -1 : c > eMid and eMid > eTrend ? 1 : c < eMid and eMid < eTrend ? -1 : 0
+
+f_score_part(bool cond, int weight) =>
+    cond ? weight : 0
+
+f_line_update(line ln, float price, color col, style, int width, int barsForward) =>
+    line out = ln
+    if na(out)
+        out := line.new(bar_index, price, bar_index + barsForward, price, xloc=xloc.bar_index, extend=extend.none, color=col, style=style, width=width)
+    else
+        line.set_xy1(out, bar_index, price)
+        line.set_xy2(out, bar_index + barsForward, price)
+        line.set_color(out, col)
+        line.set_style(out, style)
+        line.set_width(out, width)
+    out
+
+f_line_hide(line ln) =>
+    if not na(ln)
+        line.set_xy1(ln, bar_index, close)
+        line.set_xy2(ln, bar_index, close)
+        line.set_color(ln, color.new(color.gray, 100))
+    ln
+
+f_label_update(label lb, float price, string txt, color bg, color fg) =>
+    label out = lb
+    if na(out)
+        out := label.new(bar_index, price, txt, xloc=xloc.bar_index, style=label.style_label_left, color=bg, textcolor=fg, size=size.small)
+    else
+        label.set_xy(out, bar_index, price)
+        label.set_text(out, txt)
+        label.set_color(out, bg)
+        label.set_textcolor(out, fg)
+    out
+
+//==================================================
+// CORE CALCULATION
+//==================================================
+emaFast   = ta.ema(close, emaFastLen)
+emaMid    = ta.ema(close, emaMidLen)
+emaTrend  = ta.ema(close, emaTrendLen)
+atr       = ta.atr(atrLen)
+atrPct    = f_safe_div(atr, close, 0.0) * 100.0
+rsi       = ta.rsi(close, rsiLen)
+[macdLine, macdSig, macdHist] = ta.macd(close, macdFast, macdSlow, macdSignal)
+[diPlus, diMinus, adx] = ta.dmi(adxLen, adxSmooth)
+
+bbBasis = ta.sma(close, 20)
+bbDev   = ta.stdev(close, 20) * 2.0
+bbUpper = bbBasis + bbDev
+bbLower = bbBasis - bbDev
+bbWidthATR = f_safe_div(bbUpper - bbLower, atr, 0.0)
+
+range10 = ta.highest(high, 10) - ta.lowest(low, 10)
+rangeATR = f_safe_div(range10, atr, 0.0)
+volMA = ta.sma(volume, volLen)
+volRatio = f_safe_div(volume, volMA, 1.0)
+
+//==================================================
+// HTF BIAS
+//==================================================
+htf1Close = request.security(syminfo.tickerid, htf1, close, barmerge.gaps_off, barmerge.lookahead_off)
+htf1Fast  = request.security(syminfo.tickerid, htf1, ta.ema(close, emaFastLen), barmerge.gaps_off, barmerge.lookahead_off)
+htf1Mid   = request.security(syminfo.tickerid, htf1, ta.ema(close, emaMidLen), barmerge.gaps_off, barmerge.lookahead_off)
+htf1Trend = request.security(syminfo.tickerid, htf1, ta.ema(close, emaTrendLen), barmerge.gaps_off, barmerge.lookahead_off)
+
+htf2Close = request.security(syminfo.tickerid, htf2, close, barmerge.gaps_off, barmerge.lookahead_off)
+htf2Fast  = request.security(syminfo.tickerid, htf2, ta.ema(close, emaFastLen), barmerge.gaps_off, barmerge.lookahead_off)
+htf2Mid   = request.security(syminfo.tickerid, htf2, ta.ema(close, emaMidLen), barmerge.gaps_off, barmerge.lookahead_off)
+htf2Trend = request.security(syminfo.tickerid, htf2, ta.ema(close, emaTrendLen), barmerge.gaps_off, barmerge.lookahead_off)
+
+ltfBias = f_bias(close, emaFast, emaMid, emaTrend)
+htf1Bias = f_bias(htf1Close, htf1Fast, htf1Mid, htf1Trend)
+htf2Bias = f_bias(htf2Close, htf2Fast, htf2Mid, htf2Trend)
+
+htfLongScore  = (useHTF1 and htf1Bias > 0 ? 1 : 0) + (useHTF2 and htf2Bias > 0 ? 1 : 0)
+htfShortScore = (useHTF1 and htf1Bias < 0 ? 1 : 0) + (useHTF2 and htf2Bias < 0 ? 1 : 0)
+htfMaxScore   = (useHTF1 ? 1 : 0) + (useHTF2 ? 1 : 0)
+
+//==================================================
+// STRUCTURE, BOS, SWEEP LIQUIDITY
+//==================================================
+pivH = ta.pivothigh(high, pivotLeft, pivotRight)
+pivL = ta.pivotlow(low, pivotLeft, pivotRight)
+
+var float lastSwingHigh = na
+var float lastSwingLow = na
+if not na(pivH)
+    lastSwingHigh := pivH
+if not na(pivL)
+    lastSwingLow := pivL
+
+fallbackHigh = ta.highest(high, structureLen)[1]
+fallbackLow  = ta.lowest(low, structureLen)[1]
+refHigh = na(lastSwingHigh) ? fallbackHigh : lastSwingHigh
+refLow  = na(lastSwingLow) ? fallbackLow : lastSwingLow
+
+bosLong  = not na(refHigh) and close > refHigh and close[1] <= refHigh
+bosShort = not na(refLow) and close < refLow and close[1] >= refLow
+chochLong  = ltfBias <= 0 and bosLong
+chochShort = ltfBias >= 0 and bosShort
+
+prevLowest = ta.lowest(low[1], liqLookback)
+prevHighest = ta.highest(high[1], liqLookback)
+sweepLow = low < prevLowest and close > prevLowest
+sweepHigh = high > prevHighest and close < prevHighest
+
+eqHigh = math.abs(high - prevHighest) <= atr * equalTolATR
+eqLow = math.abs(low - prevLowest) <= atr * equalTolATR
+
+//==================================================
+// SESSIONS
+//==================================================
+inAsia = not na(time(timeframe.period, asiaSession, sessionTz))
+inLondon = not na(time(timeframe.period, londonSession, sessionTz))
+inNY = not na(time(timeframe.period, nySession, sessionTz))
+inRollover = not na(time(timeframe.period, rolloverSess, sessionTz))
+inOverlap = inLondon and inNY
+sessionOK = not useSession or ((inAsia or inLondon or inNY) and not (avoidRollover and inRollover))
+sessionName = inOverlap ? "LONDON+NY" : inLondon ? "LONDON" : inNY ? "NEW YORK" : inAsia ? "ASIA" : "OFF"
+sessionMultiplier = inOverlap ? 1.15 : inLondon ? 1.08 : inNY ? 1.05 : inAsia ? 0.88 : 0.80
+
+//==================================================
+// FILTERS
+//==================================================
+trendOK = adx >= minADX and adx <= maxADX
+chop = useChopFilter and (rangeATR < minRangeATR or adx < minADX or bbWidthATR < 1.00)
+atrTooHigh = timeframe.isintraday and atrPct > maxAtrPct
+volOK = not useVolFilter or volRatio >= minVolRatio
+canLong = tradeDirection != "SHORT ONLY"
+canShort = tradeDirection != "LONG ONLY"
+
+htfBlockLong = blockCounterHTF and htfMaxScore > 0 and htfShortScore == htfMaxScore
+htfBlockShort = blockCounterHTF and htfMaxScore > 0 and htfLongScore == htfMaxScore
+
+//==================================================
+// SCORING ENGINE FOR FOREX
+//==================================================
+trendLong = close > emaFast and emaFast > emaMid and emaMid > emaTrend
+trendShort = close < emaFast and emaFast < emaMid and emaMid < emaTrend
+momentumLong = rsi > 52 and macdHist > 0 and macdLine > macdSig
+momentumShort = rsi < 48 and macdHist < 0 and macdLine < macdSig
+dmiLong = diPlus > diMinus and trendOK
+dmiShort = diMinus > diPlus and trendOK
+pullbackLong = low <= emaFast or low <= emaMid or close <= emaFast + atr * 0.35
+pullbackShort = high >= emaFast or high >= emaMid or close >= emaFast - atr * 0.35
+structureLong = bosLong or chochLong or sweepLow or close > refHigh
+structureShort = bosShort or chochShort or sweepHigh or close < refLow
+liquidityLong = sweepLow or eqLow
+liquidityShort = sweepHigh or eqHigh
+
+longScoreRaw = 0
+longScoreRaw += f_score_part(trendLong, 22)
+longScoreRaw += f_score_part(close > emaTrend, 8)
+longScoreRaw += f_score_part(momentumLong, 16)
+longScoreRaw += f_score_part(dmiLong, 14)
+longScoreRaw += f_score_part(structureLong, 14)
+longScoreRaw += f_score_part(pullbackLong or entryMode == "BREAKOUT", 8)
+longScoreRaw += f_score_part(liquidityLong, 6)
+longScoreRaw += htfMaxScore > 0 ? int(math.round(12.0 * htfLongScore / htfMaxScore)) : 6
+longScoreRaw += f_score_part(sessionOK, 6)
+longScoreRaw += f_score_part(volOK, 4)
+
+shortScoreRaw = 0
+shortScoreRaw += f_score_part(trendShort, 22)
+shortScoreRaw += f_score_part(close < emaTrend, 8)
+shortScoreRaw += f_score_part(momentumShort, 16)
+shortScoreRaw += f_score_part(dmiShort, 14)
+shortScoreRaw += f_score_part(structureShort, 14)
+shortScoreRaw += f_score_part(pullbackShort or entryMode == "BREAKOUT", 8)
+shortScoreRaw += f_score_part(liquidityShort, 6)
+shortScoreRaw += htfMaxScore > 0 ? int(math.round(12.0 * htfShortScore / htfMaxScore)) : 6
+shortScoreRaw += f_score_part(sessionOK, 6)
+shortScoreRaw += f_score_part(volOK, 4)
+
+penalty = 0
+penalty += chop ? 12 : 0
+penalty += atrTooHigh ? 10 : 0
+penalty += inRollover and avoidRollover ? 15 : 0
+penalty += adx > maxADX ? 8 : 0
+
+longScore = int(f_clamp(longScoreRaw - penalty - (htfBlockLong ? 18 : 0), 0, 100))
+shortScore = int(f_clamp(shortScoreRaw - penalty - (htfBlockShort ? 18 : 0), 0, 100))
+
+longValid = canLong and sessionOK and volOK and not atrTooHigh and not htfBlockLong and longScore >= minScore and longScore >= shortScore + minScoreGap
+shortValid = canShort and sessionOK and volOK and not atrTooHigh and not htfBlockShort and shortScore >= minScore and shortScore >= longScore + minScoreGap
+
+int signalDir = longValid ? 1 : shortValid ? -1 : 0
+int dominantDir = longScore > shortScore ? 1 : shortScore > longScore ? -1 : 0
+activeScore = signalDir == 1 ? longScore : signalDir == -1 ? shortScore : math.max(longScore, shortScore)
+
+//==================================================
+// ENTRY, SL, TP ENGINE
+//==================================================
+spreadBuffer = manualSpreadPips * f_pip_size()
+
+longRawEntry = entryMode == "MARKET" ? close : entryMode == "BREAKOUT" ? math.max(close, refHigh + atr * 0.03) : close - atr * entryATR
+shortRawEntry = entryMode == "MARKET" ? close : entryMode == "BREAKOUT" ? math.min(close, refLow - atr * 0.03) : close + atr * entryATR
+
+longEntry = math.min(close, longRawEntry)
+shortEntry = math.max(close, shortRawEntry)
+longZoneLo = longEntry - atr * entryZoneATR
+longZoneHi = longEntry + atr * entryZoneATR
+shortZoneLo = shortEntry - atr * entryZoneATR
+shortZoneHi = shortEntry + atr * entryZoneATR
+
+longSLStruct = math.min(refLow, ta.lowest(low, structureLen)) - atr * slStructATR - spreadBuffer
+shortSLStruct = math.max(refHigh, ta.highest(high, structureLen)) + atr * slStructATR + spreadBuffer
+longSLAtr = longEntry - atr * slATR - spreadBuffer
+shortSLAtr = shortEntry + atr * slATR + spreadBuffer
+longSL = math.min(longSLAtr, longSLStruct)
+shortSL = math.max(shortSLAtr, shortSLStruct)
+
+longRisk = math.max(longEntry - longSL, atr * 0.35)
+shortRisk = math.max(shortSL - shortEntry, atr * 0.35)
+
+longTP1 = longEntry + longRisk * rrTP1 * sessionMultiplier
+longTP2 = longEntry + longRisk * rrTP2 * sessionMultiplier
+longTP3 = longEntry + longRisk * rrTP3 * sessionMultiplier
+shortTP1 = shortEntry - shortRisk * rrTP1 * sessionMultiplier
+shortTP2 = shortEntry - shortRisk * rrTP2 * sessionMultiplier
+shortTP3 = shortEntry - shortRisk * rrTP3 * sessionMultiplier
+
+entry = signalDir == 1 ? longEntry : signalDir == -1 ? shortEntry : dominantDir == 1 ? longEntry : shortEntry
+zoneLo = signalDir == 1 ? longZoneLo : signalDir == -1 ? shortZoneLo : dominantDir == 1 ? longZoneLo : shortZoneLo
+zoneHi = signalDir == 1 ? longZoneHi : signalDir == -1 ? shortZoneHi : dominantDir == 1 ? longZoneHi : shortZoneHi
+sl = signalDir == 1 ? longSL : signalDir == -1 ? shortSL : dominantDir == 1 ? longSL : shortSL
+tp1 = signalDir == 1 ? longTP1 : signalDir == -1 ? shortTP1 : dominantDir == 1 ? longTP1 : shortTP1
+tp2 = signalDir == 1 ? longTP2 : signalDir == -1 ? shortTP2 : dominantDir == 1 ? longTP2 : shortTP2
+tp3 = signalDir == 1 ? longTP3 : signalDir == -1 ? shortTP3 : dominantDir == 1 ? longTP3 : shortTP3
+riskNow = signalDir == 1 ? longRisk : signalDir == -1 ? shortRisk : dominantDir == 1 ? longRisk : shortRisk
+
+rrLive = signalDir == 1 ? f_safe_div(tp1 - entry, entry - sl, 0.0) : signalDir == -1 ? f_safe_div(entry - tp1, sl - entry, 0.0) : na
+prediction = signalDir == 1 ? "BUY / NAIK" : signalDir == -1 ? "SELL / TURUN" : dominantDir == 1 ? "WAIT BUY" : dominantDir == -1 ? "WAIT SELL" : "WAIT"
+status = signalDir != 0 ? "VALID" : chop ? "CHOP / TUNGGU" : atrTooHigh ? "ATR TERLALU TINGGI" : not sessionOK ? "DI LUAR SESI" : "MENUNGGU KONFIRMASI"
+
+//==================================================
+// VISUAL LINES
+//==================================================
+var line lnEntry = na
+var line lnSL = na
+var line lnTP1 = na
+var line lnTP2 = na
+var line lnTP3 = na
+var line lnZoneLo = na
+var line lnZoneHi = na
+var label lbPlan = na
+
+if barstate.islast
+    bool showTradePlan = showLines and (signalDir != 0 or dominantDir != 0)
+    if showTradePlan
+        color dirColor = signalDir == 1 or dominantDir == 1 ? color.new(color.lime, 0) : color.new(color.red, 0)
+        lnEntry := f_line_update(lnEntry, entry, dirColor, line.style_solid, 2, lineForward)
+        lnSL := f_line_update(lnSL, sl, color.new(color.red, 0), line.style_solid, 2, lineForward)
+        lnTP1 := f_line_update(lnTP1, tp1, color.new(color.teal, 0), line.style_dashed, 1, lineForward)
+        lnTP2 := f_line_update(lnTP2, tp2, color.new(color.teal, 0), line.style_dashed, 1, lineForward)
+        lnTP3 := f_line_update(lnTP3, tp3, color.new(color.teal, 0), line.style_dashed, 1, lineForward)
+        lnZoneLo := f_line_update(lnZoneLo, zoneLo, color.new(dirColor, 65), line.style_dotted, 1, lineForward)
+        lnZoneHi := f_line_update(lnZoneHi, zoneHi, color.new(dirColor, 65), line.style_dotted, 1, lineForward)
+        string planText = prediction + "\nEntry: " + f_fmt(entry) + "\nSL: " + f_fmt(sl) + "\nTP1/2/3: " + f_fmt(tp1) + " / " + f_fmt(tp2) + " / " + f_fmt(tp3) + "\nScore: " + str.tostring(activeScore) + "%"
+        lbPlan := f_label_update(lbPlan, entry, planText, color.new(dirColor, 10), color.white)
+    else
+        lnEntry := f_line_hide(lnEntry)
+        lnSL := f_line_hide(lnSL)
+        lnTP1 := f_line_hide(lnTP1)
+        lnTP2 := f_line_hide(lnTP2)
+        lnTP3 := f_line_hide(lnTP3)
+        lnZoneLo := f_line_hide(lnZoneLo)
+        lnZoneHi := f_line_hide(lnZoneHi)
+
+plot(emaFast, "EMA Fast", color=color.new(color.aqua, 0), linewidth=1)
+plot(emaMid, "EMA Mid", color=color.new(color.orange, 0), linewidth=1)
+plot(emaTrend, "EMA Trend 200", color=color.new(color.purple, 0), linewidth=2)
+
+plotshape(showMarkers and longValid, title="Forex BUY Valid", text="BUY FX", style=shape.labelup, location=location.belowbar, color=color.new(color.lime, 0), textcolor=color.black, size=size.small)
+plotshape(showMarkers and shortValid, title="Forex SELL Valid", text="SELL FX", style=shape.labeldown, location=location.abovebar, color=color.new(color.red, 0), textcolor=color.white, size=size.small)
+plotshape(showMarkers and sweepLow, title="Liquidity Sweep Low", text="SWEEP L", style=shape.triangleup, location=location.belowbar, color=color.new(color.teal, 0), textcolor=color.white, size=size.tiny)
+plotshape(showMarkers and sweepHigh, title="Liquidity Sweep High", text="SWEEP H", style=shape.triangledown, location=location.abovebar, color=color.new(color.maroon, 0), textcolor=color.white, size=size.tiny)
+
+//==================================================
+// PANEL
+//==================================================
+var table panel = na
+if showPanel and na(panel)
+    panel := table.new(f_pos(panelPos), 2, 18, bgcolor=color.new(color.black, 8), frame_color=color.new(color.gray, 30), frame_width=1, border_color=color.new(color.gray, 55), border_width=1)
+
+f_cell(int row, string left, string right, color bgRight) =>
+    if showPanel and not na(panel)
+        table.cell(panel, 0, row, left, text_color=color.white, bgcolor=color.new(color.black, 0), text_size=f_size(panelSize))
+        table.cell(panel, 1, row, right, text_color=color.white, bgcolor=bgRight, text_size=f_size(panelSize))
+
+if barstate.islast and showPanel and not na(panel)
+    color sigBg = signalDir == 1 ? color.new(color.green, 15) : signalDir == -1 ? color.new(color.red, 15) : color.new(color.gray, 35)
+    color okBg = status == "VALID" ? color.new(color.green, 15) : color.new(color.orange, 25)
+    table.cell(panel, 0, 0, "FOREX V58 PRO", text_color=color.white, bgcolor=color.new(color.blue, 25), text_size=f_size(panelSize))
+    table.cell(panel, 1, 0, syminfo.ticker + " | " + timeframe.period, text_color=color.white, bgcolor=color.new(color.blue, 25), text_size=f_size(panelSize))
+    f_cell(1, "Prediksi", prediction, sigBg)
+    f_cell(2, "Status", status, okBg)
+    f_cell(3, "Confidence", str.tostring(activeScore) + "%  L:" + str.tostring(longScore) + " S:" + str.tostring(shortScore), sigBg)
+    f_cell(4, "Sesi", sessionName + " | OK: " + f_bool_txt(sessionOK), sessionOK ? color.new(color.green, 35) : color.new(color.red, 25))
+    f_cell(5, "Bias LTF", f_bias_txt(ltfBias), ltfBias > 0 ? color.new(color.green, 45) : ltfBias < 0 ? color.new(color.red, 45) : color.new(color.gray, 45))
+    f_cell(6, "Bias HTF", htf1 + ":" + f_bias_txt(htf1Bias) + " | " + htf2 + ":" + f_bias_txt(htf2Bias), color.new(color.gray, 45))
+    f_cell(7, "Trend ADX/DMI", str.tostring(adx, "#.0") + " | +DI " + str.tostring(diPlus, "#.0") + " / -DI " + str.tostring(diMinus, "#.0"), trendOK ? color.new(color.green, 40) : color.new(color.orange, 35))
+    f_cell(8, "Momentum", "RSI " + str.tostring(rsi, "#.0") + " | MACD Hist " + str.tostring(macdHist, "#.#####"), momentumLong ? color.new(color.green, 45) : momentumShort ? color.new(color.red, 45) : color.new(color.gray, 45))
+    f_cell(9, "Struktur", bosLong ? "BOS BULL" : bosShort ? "BOS BEAR" : chochLong ? "CHOCH BULL" : chochShort ? "CHOCH BEAR" : "NO BOS", color.new(color.gray, 45))
+    f_cell(10, "Liquidity", sweepLow ? "SWEEP LOW / BUY SIDE" : sweepHigh ? "SWEEP HIGH / SELL SIDE" : eqLow ? "EQUAL LOW" : eqHigh ? "EQUAL HIGH" : "NORMAL", sweepLow ? color.new(color.green, 35) : sweepHigh ? color.new(color.red, 35) : color.new(color.gray, 45))
+    f_cell(11, "Chop / ATR", "Range10/ATR " + str.tostring(rangeATR, "#.00") + " | ATR% " + str.tostring(atrPct, "#.000"), chop or atrTooHigh ? color.new(color.red, 35) : color.new(color.green, 45))
+    f_cell(12, "Entry Zone", f_fmt(zoneLo) + " - " + f_fmt(zoneHi), sigBg)
+    f_cell(13, "Entry", f_fmt(entry), sigBg)
+    f_cell(14, "SL", f_fmt(sl) + " | " + str.tostring(f_to_pips(entry - sl), "#.0") + " pips", color.new(color.red, 25))
+    f_cell(15, "TP1 / TP2", f_fmt(tp1) + " / " + f_fmt(tp2), color.new(color.teal, 30))
+    f_cell(16, "TP3 / RR TP1", f_fmt(tp3) + " | RR " + (na(rrLive) ? "-" : str.tostring(rrLive, "#.00")), color.new(color.teal, 30))
+    f_cell(17, "Catatan", "FX: volume hanya tick, pakai HTF+sesi+ATR", color.new(color.gray, 50))
+
+//==================================================
+// DATA WINDOW / ALERTS
+//==================================================
+plot(longScore, "Long Confidence", display=display.data_window)
+plot(shortScore, "Short Confidence", display=display.data_window)
+plot(activeScore, "Active Confidence", display=display.data_window)
+plot(atr / f_pip_size(), "ATR Pips", display=display.data_window)
+plot(rangeATR, "Range10 / ATR", display=display.data_window)
+plot(volRatio, "Tick Volume Ratio", display=display.data_window)
+
+alertcondition(useAlerts and longValid, title="FOREX V58 BUY", message="FOREX V58 BUY valid pada {{ticker}} {{interval}}. Cek Entry/SL/TP di panel.")
+alertcondition(useAlerts and shortValid, title="FOREX V58 SELL", message="FOREX V58 SELL valid pada {{ticker}} {{interval}}. Cek Entry/SL/TP di panel.")
+alertcondition(useAlerts and sweepLow, title="FOREX V58 Sweep Low", message="Liquidity sweep low terdeteksi pada {{ticker}} {{interval}}.")
+alertcondition(useAlerts and sweepHigh, title="FOREX V58 Sweep High", message="Liquidity sweep high terdeteksi pada {{ticker}} {{interval}}.")

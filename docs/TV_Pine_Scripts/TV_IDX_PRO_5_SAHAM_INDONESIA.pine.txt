@@ -1,0 +1,426 @@
+//@version=6
+indicator("IDX SMART MONEY PRO V5 - Intraday TP Realistic & Downside Guard", overlay=true, max_lines_count=300, max_labels_count=300, max_bars_back=5000, dynamic_requests=true)
+
+//==================================================
+// 1. INPUT GROUP
+//==================================================
+groupCore   = "1. Core IDX"
+groupTrend  = "2. Trend & Momentum"
+groupVol    = "3. Volume, Value, Smart Money"
+groupStruct = "4. Structure, Breakout, Support Resistance"
+groupRisk   = "5. Entry, TP, SL, Downside Risk"
+groupMTF    = "6. Multi Timeframe"
+groupBroker = "7. Broker Manual"
+groupUI     = "8. Panel & Visual"
+
+//==================================================
+// 2. INPUT
+//==================================================
+idxSymbol       = input.symbol("IDX:COMPOSITE", "Benchmark IDX/IHSG", group=groupCore)
+minAvgValue     = input.float(1.0, "Min Avg Value Harian / Intraday", step=0.1, group=groupCore)
+useSessionGate  = input.bool(true, "Gunakan Gate Sesi IDX", group=groupCore)
+
+emaFastLen      = input.int(20, "EMA Fast", minval=1, group=groupTrend)
+emaMidLen       = input.int(50, "EMA Mid", minval=1, group=groupTrend)
+emaSlowLen      = input.int(200, "EMA Slow", minval=1, group=groupTrend)
+rsiLen          = input.int(14, "RSI Length", minval=2, group=groupTrend)
+macdFast        = input.int(12, "MACD Fast", minval=1, group=groupTrend)
+macdSlow        = input.int(26, "MACD Slow", minval=1, group=groupTrend)
+macdSignal      = input.int(9, "MACD Signal", minval=1, group=groupTrend)
+adxLen          = input.int(14, "ADX DI Length", minval=2, group=groupTrend)
+adxSmooth       = input.int(14, "ADX Smoothing", minval=2, group=groupTrend)
+adxMin          = input.float(18.0, "Minimal ADX Valid", step=0.5, group=groupTrend)
+
+volLen          = input.int(20, "Volume Average Length", minval=2, group=groupVol)
+rvolMin         = input.float(1.20, "Minimal RVOL Buy Valid", step=0.05, group=groupVol)
+cmfLen          = input.int(20, "CMF Length", minval=2, group=groupVol)
+obvLen          = input.int(10, "OBV Slope Length", minval=2, group=groupVol)
+
+srLen           = input.int(30, "Support Resistance Lookback", minval=5, group=groupStruct)
+swingLen        = input.int(10, "Structure BOS Lookback", minval=3, group=groupStruct)
+retestTolAtr    = input.float(0.25, "Retest Tolerance ATR", step=0.05, group=groupStruct)
+
+atrLen          = input.int(14, "ATR Length", minval=2, group=groupRisk)
+entryAtr1       = input.float(0.25, "Entry 1 ATR Pullback", step=0.05, group=groupRisk)
+entryAtr2       = input.float(0.55, "Entry 2 ATR Pullback", step=0.05, group=groupRisk)
+entryAtr3       = input.float(0.85, "Entry 3 ATR Pullback", step=0.05, group=groupRisk)
+maxChaseAtr     = input.float(0.60, "Maks Jarak Harga di atas Entry 1 dalam ATR", step=0.05, group=groupRisk)
+maxChasePct     = input.float(1.50, "Maks Jarak Harga di atas Entry 1 %", step=0.10, group=groupRisk)
+maxRiskPct      = input.float(5.00, "Maks Risk Ideal %", step=0.10, group=groupRisk)
+tp1Atr          = input.float(0.35, "TP1 ATR Realistis", step=0.05, group=groupRisk)
+tp2Atr          = input.float(0.70, "TP2 ATR Realistis", step=0.05, group=groupRisk)
+tp3Atr          = input.float(1.05, "TP3 ATR Realistis", step=0.05, group=groupRisk)
+downRiskLimit   = input.float(60.0, "Batas Risiko Turun Tinggi %", step=1.0, group=groupRisk)
+
+useMTF          = input.bool(true, "Gunakan Validasi Daily & Weekly", group=groupMTF)
+
+manualRetailSell = input.bool(false, "Manual: Retail Sell Dominan", group=groupBroker)
+manualBigBuy     = input.bool(false, "Manual: Big Buy / Broker Besar Masuk", group=groupBroker)
+
+showPanel       = input.bool(true, "Tampilkan Panel", group=groupUI)
+showLevels      = input.bool(true, "Tampilkan Entry / SL / TP", group=groupUI)
+showSignals     = input.bool(true, "Tampilkan Signal", group=groupUI)
+showBackground  = input.bool(true, "Background Risiko", group=groupUI)
+panelPos        = input.string("Top Right", "Posisi Panel", options=["Top Right","Top Left","Bottom Right","Bottom Left"], group=groupUI)
+
+//==================================================
+// 3. HELPER FUNCTION
+//==================================================
+f_clamp(x, lo, hi) =>
+    math.max(lo, math.min(hi, x))
+
+f_round(x) =>
+    math.round(x / syminfo.mintick) * syminfo.mintick
+
+f_fmt(x) =>
+    str.tostring(x, format.mintick)
+
+f_yesno(x) =>
+    x ? "YA" : "TIDAK"
+
+f_ok(x) =>
+    x ? "OK: YA" : "OK: TIDAK"
+
+f_pos() =>
+    panelPos == "Top Left" ? position.top_left :
+     panelPos == "Bottom Right" ? position.bottom_right :
+     panelPos == "Bottom Left" ? position.bottom_left :
+     position.top_right
+
+//==================================================
+// 4. SESSION IDX
+//==================================================
+inMorning   = not na(time(timeframe.period, "0900-1200:12345", "Asia/Jakarta"))
+inAfternoon = not na(time(timeframe.period, "1330-1550:12345", "Asia/Jakarta"))
+sessionIDX  = useSessionGate ? (inMorning or inAfternoon) : true
+
+//==================================================
+// 5. CORE INDICATORS
+//==================================================
+ema20  = ta.ema(close, emaFastLen)
+ema50  = ta.ema(close, emaMidLen)
+ema200 = ta.ema(close, emaSlowLen)
+atr    = ta.atr(atrLen)
+
+rsi = ta.rsi(close, rsiLen)
+
+[macdLine, macdSig, macdHist] = ta.macd(close, macdFast, macdSlow, macdSignal)
+
+[diPlus, diMinus, adx] = ta.dmi(adxLen, adxSmooth)
+
+vwapVal = ta.vwap(hlc3)
+
+volSma = ta.sma(volume, volLen)
+rvol   = volSma > 0 ? volume / volSma : 0.0
+
+valueTraded = close * volume
+avgValue    = ta.sma(valueTraded, volLen)
+liqOK       = avgValue >= minAvgValue and volume > 0
+
+mfMult = high != low ? (((close - low) - (high - close)) / (high - low)) : 0.0
+mfVol  = mfMult * volume
+cmf    = ta.sum(mfVol, cmfLen) / math.max(ta.sum(volume, cmfLen), 1)
+
+obv = ta.cum(math.sign(ta.change(close)) * volume)
+obvSlope = obv - obv[obvLen]
+
+//==================================================
+// 6. BENCHMARK RELATIVE STRENGTH VS IHSG
+//==================================================
+idxClose = request.security(idxSymbol, timeframe.period, close, barmerge.gaps_off, barmerge.lookahead_off, true)
+rsLen = 10
+stockPerf = close[rsLen] != 0 ? (close / close[rsLen] - 1.0) * 100.0 : na
+idxPerf   = not na(idxClose) and idxClose[rsLen] != 0 ? (idxClose / idxClose[rsLen] - 1.0) * 100.0 : na
+rsVsIdx   = not na(stockPerf) and not na(idxPerf) ? stockPerf - idxPerf : na
+rsOK      = not na(rsVsIdx) and rsVsIdx > 0
+
+//==================================================
+// 7. TREND, MOMENTUM, SMART MONEY GATES
+//==================================================
+trendFastOK = ema20 > ema50
+trendSlowOK = close > ema200
+trendOK     = trendFastOK and trendSlowOK
+
+rsiReboundOK = rsi >= 45 and rsi <= 68
+rsiWeak      = rsi < 45
+rsiHot       = rsi > 72
+
+macdOK = macdLine > macdSig and macdHist > 0
+macdWeak = macdHist < 0
+
+adxBullOK = adx >= adxMin and diPlus > diMinus
+adxBearOK = adx >= adxMin and diMinus > diPlus
+
+rvolOK = rvol >= rvolMin
+vwapOK = close >= vwapVal
+
+cmfOK = cmf > 0
+obvOK = obvSlope > 0
+
+smartMoneyOK = (cmfOK or obvOK) and not manualRetailSell
+accumulationOK = cmf > 0 and obvSlope > 0 and close >= open
+
+//==================================================
+// 8. SUPPORT, RESISTANCE, STRUCTURE
+//==================================================
+resistance = ta.highest(high, srLen)[1]
+support    = ta.lowest(low, srLen)[1]
+
+bosUp   = close > ta.highest(high, swingLen)[1]
+bosDown = close < ta.lowest(low, swingLen)[1]
+structureOK = bosUp or (close > ema20 and close > close[1])
+
+breakout = close > resistance and rvolOK
+retest   = low <= resistance + atr * retestTolAtr and close > resistance and close > open
+breakoutRetestOK = breakout or retest
+
+//==================================================
+// 9. CANDLE QUALITY
+//==================================================
+body = math.abs(close - open)
+rng  = math.max(high - low, syminfo.mintick)
+upperWick = high - math.max(open, close)
+lowerWick = math.min(open, close) - low
+
+isBullBody = close > open
+isDoji = body <= rng * 0.10
+isHammer = lowerWick >= body * 1.8 and upperWick <= body * 1.2 and close >= open
+isEngulfBull = close > open and close[1] < open[1] and close >= open[1] and open <= close[1]
+isBadUpperWick = upperWick > body * 2.0 and close < high - rng * 0.35
+
+candleQualityOK = (isBullBody or isHammer or isEngulfBull or isDoji) and not isBadUpperWick
+
+//==================================================
+// 10. MULTI TIMEFRAME FILTER
+//==================================================
+dailyTrendOK = request.security(syminfo.tickerid, "D", close > ta.ema(close, 20) or close > close[1], barmerge.gaps_off, barmerge.lookahead_off)
+weeklyTrendOK = request.security(syminfo.tickerid, "W", close > ta.ema(close, 20) or close > open, barmerge.gaps_off, barmerge.lookahead_off)
+
+mtfOK = useMTF ? (dailyTrendOK or weeklyTrendOK) : true
+
+//==================================================
+// 11. ENTRY ZONE — DIPERTAHANKAN KONSEPNYA, DIPERTAJAM VALIDASINYA
+//==================================================
+entry1 = f_round(close - atr * entryAtr1)
+entry2 = f_round(close - atr * entryAtr2)
+entry3 = f_round(close - atr * entryAtr3)
+
+// Entry tidak boleh berada di bawah support terlalu jauh
+entry1 := f_round(math.max(entry1, support))
+entry2 := f_round(math.max(entry2, support - atr * 0.20))
+entry3 := f_round(math.max(entry3, support - atr * 0.35))
+
+priceAboveEntry = close > entry1
+chaseAtr = atr > 0 ? (close - entry1) / atr : 0.0
+chasePct = entry1 > 0 ? (close / entry1 - 1.0) * 100.0 : 0.0
+chaseTooHigh = priceAboveEntry and (chaseAtr > maxChaseAtr or chasePct > maxChasePct)
+
+//==================================================
+// 12. STOP LOSS — RISK DIKUNCI AGAR TIDAK TERLALU LEBAR
+//==================================================
+slRaw = math.min(entry3 - atr * 0.25, support - syminfo.mintick)
+slMaxRisk = entry1 * (1.0 - maxRiskPct / 100.0)
+sl = f_round(math.max(slRaw, slMaxRisk))
+sl := sl >= entry3 ? f_round(entry3 - syminfo.mintick) : sl
+
+riskPct = entry1 > 0 ? (entry1 - sl) / entry1 * 100.0 : na
+riskOK = not na(riskPct) and riskPct <= maxRiskPct
+
+//==================================================
+// 13. TAKE PROFIT REALISTIS — ATR + RESISTANCE + REACHABILITY
+//==================================================
+reachFactor =
+     rvolOK and vwapOK and breakoutRetestOK ? 1.15 :
+     rvolOK and vwapOK ? 1.00 :
+     vwapOK ? 0.80 :
+     0.65
+
+tpBase = entry1
+tp1Raw = tpBase + atr * tp1Atr * reachFactor
+tp2Raw = tpBase + atr * tp2Atr * reachFactor
+tp3Raw = tpBase + atr * tp3Atr * reachFactor
+
+resValid = not na(resistance) and resistance > tpBase
+
+tp1 = f_round(resValid ? math.min(tp1Raw, resistance) : tp1Raw)
+tp2 = f_round(resValid ? math.min(tp2Raw, resistance + atr * 0.25) : tp2Raw)
+tp3 = f_round(resValid ? math.min(tp3Raw, resistance + atr * 0.50) : tp3Raw)
+
+// Pastikan urutan TP tetap naik
+tp1 := tp1 <= tpBase ? f_round(tpBase + atr * 0.20) : tp1
+tp2 := tp2 <= tp1 ? f_round(tp1 + atr * 0.25) : tp2
+tp3 := tp3 <= tp2 ? f_round(tp2 + atr * 0.25) : tp3
+
+rr1 = (tp1 - entry1) / math.max(entry1 - sl, syminfo.mintick)
+rr2 = (tp2 - entry1) / math.max(entry1 - sl, syminfo.mintick)
+rr3 = (tp3 - entry1) / math.max(entry1 - sl, syminfo.mintick)
+
+tp1Reachable = (tp1 - close) <= atr * 0.80 or close <= entry1
+tp2Reachable = (tp2 - close) <= atr * 1.40 or close <= entry1
+tp3Reachable = (tp3 - close) <= atr * 2.00 or close <= entry1
+
+rrOK = rr2 >= 1.20
+tpReachOK = tp1Reachable and tp2Reachable
+
+//==================================================
+// 14. DOWNSIDE RISK PANEL — DIPERTAJAM
+//==================================================
+downScore = 0.0
+downScore += close < ema20 ? 10 : 0
+downScore += close < ema50 ? 10 : 0
+downScore += close < ema200 ? 10 : 0
+downScore += not vwapOK ? 10 : 0
+downScore += rsiWeak ? 10 : 0
+downScore += macdWeak ? 10 : 0
+downScore += adxBearOK ? 12 : 0
+downScore += not rvolOK ? 6 : 0
+downScore += cmf < 0 ? 8 : 0
+downScore += obvSlope < 0 ? 8 : 0
+downScore += bosDown ? 10 : 0
+downScore += manualRetailSell ? 8 : 0
+downScore += not liqOK ? 8 : 0
+
+downProb = f_clamp(downScore, 0, 100)
+downRiskHigh = downProb >= downRiskLimit
+
+downTP1 = f_round(math.min(sl, close - atr * 0.40))
+downTP2 = f_round(math.min(downTP1 - atr * 0.35, support))
+downTP3 = f_round(downTP2 - atr * 0.50)
+
+//==================================================
+// 15. SCORE ENGINE — TIDAK BOLEH TINGGI JIKA GATE PENTING GAGAL
+//==================================================
+score = 0.0
+score += sessionIDX ? 5 : 0
+score += close > 0 ? 5 : 0
+score += liqOK ? 8 : 0
+score += trendFastOK ? 8 : 0
+score += trendSlowOK ? 8 : 0
+score += rsiReboundOK ? 8 : 0
+score += macdOK ? 8 : 0
+score += adxBullOK ? 8 : 0
+score += rvolOK ? 8 : 0
+score += vwapOK ? 8 : 0
+score += smartMoneyOK ? 6 : 0
+score += accumulationOK ? 5 : 0
+score += breakoutRetestOK ? 8 : 0
+score += structureOK ? 8 : 0
+score += rsOK ? 5 : 0
+score += mtfOK ? 5 : 0
+score += manualBigBuy ? 4 : 0
+
+// Penalty agar kasus ADMR/TAPG/SSIA tidak lolos sebagai buy agresif saat banyak gate gagal
+score -= not rvolOK ? 7 : 0
+score -= not vwapOK ? 7 : 0
+score -= not accumulationOK ? 5 : 0
+score -= not breakoutRetestOK ? 6 : 0
+score -= not structureOK ? 6 : 0
+score -= chaseTooHigh ? 8 : 0
+score -= downRiskHigh ? 15 : 0
+score -= not riskOK ? 10 : 0
+score -= not tpReachOK ? 8 : 0
+
+score := f_clamp(score, 0, 100)
+
+//==================================================
+// 16. FINAL STATUS
+//==================================================
+hardNoTrade = not sessionIDX or not liqOK or downRiskHigh or manualRetailSell
+waitPullback = chaseTooHigh and not hardNoTrade
+
+buyValid = score >= 80 and not hardNoTrade and not waitPullback and riskOK and rrOK and tpReachOK and vwapOK and (rvolOK or breakoutRetestOK) and structureOK
+watchlist = score >= 60 and not hardNoTrade and not buyValid
+avoid = hardNoTrade or score < 50
+
+bias =
+     buyValid ? "BULLISH VALID" :
+     waitPullback ? "WAIT PULLBACK" :
+     watchlist ? "NETRAL / PANTAU" :
+     avoid ? "LEMAH / HINDARI" :
+     "NETRAL"
+
+status =
+     buyValid ? "BUY VALID" :
+     waitPullback ? "WAIT PULLBACK" :
+     watchlist ? "PANTAU" :
+     "HINDARI"
+
+//==================================================
+// 17. VISUAL LEVELS
+//==================================================
+plot(showLevels ? entry1 : na, "Entry 1", color=color.new(color.lime, 0), linewidth=2, style=plot.style_linebr)
+plot(showLevels ? entry2 : na, "Entry 2", color=color.new(color.green, 0), linewidth=1, style=plot.style_linebr)
+plot(showLevels ? entry3 : na, "Entry 3", color=color.new(color.teal, 0), linewidth=1, style=plot.style_linebr)
+plot(showLevels ? sl : na, "Stop Loss", color=color.new(color.red, 0), linewidth=2, style=plot.style_linebr)
+plot(showLevels ? tp1 : na, "TP1 Realistis", color=color.new(color.yellow, 0), linewidth=2, style=plot.style_linebr)
+plot(showLevels ? tp2 : na, "TP2 Realistis", color=color.new(color.orange, 0), linewidth=2, style=plot.style_linebr)
+plot(showLevels ? tp3 : na, "TP3 Realistis", color=color.new(color.fuchsia, 0), linewidth=2, style=plot.style_linebr)
+plot(showLevels ? support : na, "Support", color=color.new(color.aqua, 60), linewidth=1, style=plot.style_stepline)
+plot(showLevels ? resistance : na, "Resistance", color=color.new(color.orange, 60), linewidth=1, style=plot.style_stepline)
+plot(showLevels ? vwapVal : na, "VWAP", color=color.new(color.white, 30), linewidth=1)
+
+//==================================================
+// 18. SIGNAL
+//==================================================
+plotshape(showSignals and buyValid, title="BUY VALID", text="BUY\nVALID", style=shape.labelup, location=location.belowbar, color=color.new(color.lime, 0), textcolor=color.black, size=size.small)
+plotshape(showSignals and waitPullback, title="WAIT PULLBACK", text="WAIT\nPB", style=shape.circle, location=location.belowbar, color=color.new(color.yellow, 0), textcolor=color.black, size=size.tiny)
+plotshape(showSignals and watchlist, title="PANTAU", text="WL", style=shape.circle, location=location.belowbar, color=color.new(color.orange, 0), textcolor=color.white, size=size.tiny)
+plotshape(showSignals and avoid, title="HINDARI", text="X", style=shape.labeldown, location=location.abovebar, color=color.new(color.red, 0), textcolor=color.white, size=size.tiny)
+
+bgcolor(showBackground and downRiskHigh ? color.new(color.red, 88) :
+     showBackground and buyValid ? color.new(color.green, 88) :
+     showBackground and waitPullback ? color.new(color.yellow, 90) :
+     na)
+
+//==================================================
+// 19. PANEL
+//==================================================
+var table panel = table.new(f_pos(), 2, 27, border_width=1)
+
+f_bg(ok) =>
+    ok ? color.rgb(30, 130, 70) : color.rgb(150, 35, 45)
+
+f_row(row, label, value, bg) =>
+    table.cell(panel, 0, row, label, text_color=color.white, bgcolor=color.rgb(35, 45, 60), text_size=size.small)
+    table.cell(panel, 1, row, value, text_color=color.white, bgcolor=bg, text_size=size.small)
+
+if showPanel and barstate.islast
+    titleColor = buyValid ? color.rgb(20, 130, 70) : waitPullback ? color.rgb(190, 130, 20) : avoid ? color.rgb(160, 25, 35) : color.rgb(130, 35, 130)
+
+    table.cell(panel, 0, 0, "IDX SMART MONEY PRO V5", text_color=color.white, bgcolor=color.rgb(15, 35, 70), text_size=size.small)
+    table.cell(panel, 1, 0, syminfo.ticker + " | " + status, text_color=color.white, bgcolor=titleColor, text_size=size.small)
+
+    f_row(1, "Score", str.tostring(math.round(score)) + " / 100", score >= 80 ? color.rgb(30, 75, 140) : score >= 60 ? color.rgb(125, 90, 30) : color.rgb(150, 35, 45))
+    f_row(2, "Bias", bias, titleColor)
+    f_row(3, "Session IDX", f_yesno(sessionIDX), f_bg(sessionIDX))
+    f_row(4, "Likuiditas", f_yesno(liqOK) + " | AvgVal " + str.tostring(avgValue, format.volume), f_bg(liqOK))
+    f_row(5, "Trend", "EMA20>50: " + f_yesno(trendFastOK) + " | >EMA200: " + f_yesno(trendSlowOK), f_bg(trendOK))
+    f_row(6, "RSI", str.tostring(rsi, "#.##") + " | " + f_ok(rsiReboundOK), f_bg(rsiReboundOK))
+    f_row(7, "MACD", f_yesno(macdOK) + " | Hist " + str.tostring(macdHist, "#.##"), f_bg(macdOK))
+    f_row(8, "ADX / DI", str.tostring(adx, "#.##") + " | DI+>DI-: " + f_yesno(diPlus > diMinus), f_bg(adxBullOK))
+    f_row(9, "RVOL", str.tostring(rvol, "#.##") + "x | " + f_ok(rvolOK), f_bg(rvolOK))
+    f_row(10, "VWAP", f_yesno(vwapOK), f_bg(vwapOK))
+    f_row(11, "CMF / OBV", str.tostring(cmf, "#.###") + " | OBV: " + f_yesno(obvOK), f_bg(cmfOK and obvOK))
+    f_row(12, "Akumulasi", f_yesno(accumulationOK), f_bg(accumulationOK))
+    f_row(13, "Breakout/Retest", f_yesno(breakoutRetestOK), f_bg(breakoutRetestOK))
+    f_row(14, "Struktur", f_yesno(structureOK), f_bg(structureOK))
+    f_row(15, "RS vs IHSG", not na(rsVsIdx) ? str.tostring(rsVsIdx, "#.##") + "% | " + f_ok(rsOK) : "NaN | OK: TIDAK", f_bg(rsOK))
+    f_row(16, "MTF D/W", "D:" + f_yesno(dailyTrendOK) + " | W:" + f_yesno(weeklyTrendOK), f_bg(mtfOK))
+    f_row(17, "Chase Guard", "ATR " + str.tostring(chaseAtr, "#.##") + " | " + str.tostring(chasePct, "#.##") + "%", f_bg(not chaseTooHigh))
+    f_row(18, "Broker Manual", "Retail Sell: " + f_yesno(manualRetailSell) + " | Big Buy: " + f_yesno(manualBigBuy), f_bg(not manualRetailSell))
+    f_row(19, "Entry Ideal", "E1 " + f_fmt(entry1) + " | E2 " + f_fmt(entry2) + " | E3 " + f_fmt(entry3), color.rgb(25, 140, 90))
+    f_row(20, "Stop Loss", f_fmt(sl) + " | Risk " + str.tostring(riskPct, "#.##") + "%", f_bg(riskOK))
+    f_row(21, "Take Profit", "TP1 " + f_fmt(tp1) + " | TP2 " + f_fmt(tp2) + " | TP3 " + f_fmt(tp3), color.rgb(155, 105, 20))
+    f_row(22, "RR / Reach", "RR2 " + str.tostring(rr2, "#.##") + " | Reach " + f_yesno(tpReachOK), f_bg(rrOK and tpReachOK))
+    f_row(23, "Down Risk", str.tostring(downProb, "#") + "% | " + (downRiskHigh ? "TINGGI" : "AMAN"), downRiskHigh ? color.rgb(170, 25, 35) : color.rgb(30, 130, 70))
+    f_row(24, "Risiko Turun", "TP1 " + f_fmt(downTP1) + " | TP2 " + f_fmt(downTP2) + " | TP3 " + f_fmt(downTP3), color.rgb(110, 70, 35))
+    f_row(25, "Final Action", status, titleColor)
+    f_row(26, "Catatan", waitPullback ? "Harga sudah di atas entry. Tunggu pullback/reclaim." : buyValid ? "Boleh entry bertahap, TP realistis." : "Jangan paksa beli.", titleColor)
+
+//==================================================
+// 20. ALERT
+//==================================================
+alertcondition(buyValid, title="IDX BUY VALID", message="IDX SMART MONEY PRO V5: BUY VALID {{ticker}} harga {{close}}")
+alertcondition(waitPullback, title="IDX WAIT PULLBACK", message="IDX SMART MONEY PRO V5: WAIT PULLBACK {{ticker}} harga {{close}}")
+alertcondition(watchlist, title="IDX WATCHLIST", message="IDX SMART MONEY PRO V5: PANTAU {{ticker}} harga {{close}}")
+alertcondition(downRiskHigh, title="IDX DOWNSIDE RISK HIGH", message="IDX SMART MONEY PRO V5: Risiko turun tinggi {{ticker}} harga {{close}}")
