@@ -1,6 +1,15 @@
 use anyhow::Result;
 use clap::{Parser, Subcommand};
-use coinnesia::{app, config::AppConfig, scanner::Scanner, storage};
+use std::{io::IsTerminal, sync::Arc};
+
+use coinnesia::{
+    app,
+    cache::Cache,
+    config::AppConfig,
+    data::PerSymbolMarketData,
+    scanner::Scanner,
+    storage::{self, Db},
+};
 use tracing::info;
 use tracing_subscriber::{fmt, EnvFilter};
 
@@ -30,21 +39,24 @@ enum Command {
     Migrate,
     /// Run one scan cycle using the configured scanner.
     ScanOnce,
-    /// Placeholder entry point for future live scanner loop.
+    /// Run the scanner continuously at the configured interval.
     Scan,
     /// Placeholder entry point for future paper/live trading loop.
     Trade {
         #[arg(long)]
         paper: bool,
     },
-    /// Placeholder entry point for future backtest runner.
+    /// Run the backtest scaffold.
     Backtest,
 }
 
 #[tokio::main]
 async fn main() -> Result<()> {
+    dotenvy::dotenv().ok();
+
     fmt()
         .with_env_filter(EnvFilter::from_default_env().add_directive("info".parse()?))
+        .with_ansi(std::io::stderr().is_terminal())
         .init();
 
     let cli = Cli::parse();
@@ -69,16 +81,31 @@ async fn main() -> Result<()> {
             storage::migrate_from_config(&config.database).await?;
         }
         Command::ScanOnce => {
-            let scanner = Scanner::new(config);
+            let db = Db::connect_optional(&config.database).await?;
+            let cache = Cache::connect_optional(&config.cache).await?;
+            let scanner = Scanner::with_resources(
+                config.clone(),
+                Arc::new(PerSymbolMarketData::from_config(&config)),
+                db,
+                cache,
+            );
             let report = scanner.scan_once().await?;
             info!(
+                cycle_id = %report.cycle_id,
                 scanned = report.scanned,
                 signals = report.signals.len(),
                 "scan cycle completed"
             );
         }
         Command::Scan => {
-            let scanner = Scanner::new(config);
+            let db = Db::connect_optional(&config.database).await?;
+            let cache = Cache::connect_optional(&config.cache).await?;
+            let scanner = Scanner::with_resources(
+                config.clone(),
+                Arc::new(PerSymbolMarketData::from_config(&config)),
+                db,
+                cache,
+            );
             scanner.run().await?;
         }
         Command::Trade { paper } => {

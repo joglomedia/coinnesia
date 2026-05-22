@@ -1,11 +1,16 @@
-use std::time::Duration;
+use std::{sync::Arc, time::Duration};
 
 use anyhow::{bail, Result};
 use tokio::{task::JoinSet, time};
 use tokio_util::sync::CancellationToken;
-use tracing::{error, info};
+use tracing::{error, info, warn};
 
-use crate::app::{reconciliation::can_unlock_live_trading, AppState};
+use crate::{
+    alerts::worker::AlertWorker,
+    app::{reconciliation::can_unlock_live_trading, AppState},
+    data::{self, stream::CandleStream, PerSymbolMarketData},
+    scanner::Scanner,
+};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum WorkerStatus {
@@ -102,7 +107,76 @@ async fn run_worker(
         return run_trading_worker(state, shutdown).await;
     }
 
+    if name == "scanner" {
+        return run_scanner_worker(state, shutdown).await;
+    }
+
+    if name == "alert" {
+        return run_alert_worker(state, shutdown).await;
+    }
+
     run_placeholder_loop(name, state, shutdown).await
+}
+
+async fn run_alert_worker(state: AppState, shutdown: CancellationToken) -> Result<()> {
+    let worker = AlertWorker::from_state(state)?;
+    worker.run_until_cancelled(shutdown).await
+}
+
+async fn run_scanner_worker(state: AppState, shutdown: CancellationToken) -> Result<()> {
+    state.health.heartbeat("scanner");
+    info!(worker = "scanner", "worker started");
+
+    let scanner = Scanner::with_resources(
+        (*state.config).clone(),
+        Arc::new(PerSymbolMarketData::from_config(&state.config)),
+        state.db.clone(),
+        state.cache.clone(),
+    );
+
+    // Streaming mode: event-driven scan triggered by closed candles
+    if state.config.data_sources.scanning_mode == "streaming" {
+        if let Some(ws_stream) = data::binance_ws_stream(&state.config) {
+            info!(worker = "scanner", "streaming mode enabled via Binance WebSocket");
+            let stream = Arc::new(ws_stream) as Arc<dyn CandleStream>;
+            state.health.heartbeat("scanner");
+            let result = scanner.run_streaming(stream, shutdown.clone()).await;
+            state.health.set_component("scanner", false);
+            return result;
+        }
+        warn!(
+            worker = "scanner",
+            "scanning_mode=streaming but WebSocket is disabled or no Binance symbols; \
+             falling back to polling"
+        );
+    }
+
+    // Polling mode: interval-based scan loop (default)
+    let mut interval = time::interval(Duration::from_secs(state.config.runtime.scan_interval_secs));
+    loop {
+        tokio::select! {
+            _ = shutdown.cancelled() => {
+                state.health.set_component("scanner", false);
+                info!(worker = "scanner", "worker stopped");
+                return Ok(());
+            }
+            _ = interval.tick() => {
+                state.health.heartbeat("scanner");
+                match scanner.scan_once().await {
+                    Ok(report) => {
+                        state.metrics.inc_scan_cycle();
+                        state.metrics.add_symbols_scanned(report.scanned as u64);
+                        state.metrics.add_signals_generated(report.signals.len() as u64);
+                        state.health.heartbeat("scanner");
+                    }
+                    Err(error) => {
+                        error!(?error, worker = "scanner", "scan cycle failed");
+                        state.health.heartbeat("scanner");
+                    }
+                }
+            }
+        }
+    }
 }
 
 async fn run_reconciliation_worker(state: AppState, shutdown: CancellationToken) -> Result<()> {
@@ -195,9 +269,19 @@ mod tests {
 
     use crate::{app::supervisor::Supervisor, config::AppConfig};
 
+    fn test_config() -> AppConfig {
+        let mut config = AppConfig::from_default_toml().expect("default config parses");
+        config.database.enabled = false;
+        config.cache.enabled = false;
+        config.alerts.enabled = false;
+        config.data_sources.primary = "empty".to_owned();
+        config.data_sources.fallback = "empty".to_owned();
+        config
+    }
+
     #[tokio::test]
     async fn supervisor_reconciliation_allows_paper_trading_worker() {
-        let mut config = AppConfig::from_default_toml().expect("default config parses");
+        let mut config = test_config();
         config.trading.enabled = true;
         config.trading.mode = "paper".to_owned();
         let state = crate::app::AppState::bootstrap(config)
@@ -230,7 +314,7 @@ mod tests {
 
     #[tokio::test]
     async fn supervisor_stops_workers_on_cancellation() {
-        let config = AppConfig::from_default_toml().expect("default config parses");
+        let config = test_config();
         let state = crate::app::AppState::bootstrap(config)
             .await
             .expect("state boots");
@@ -262,7 +346,7 @@ mod tests {
 
     #[tokio::test]
     async fn supervisor_keeps_live_trading_locked_without_runtime_dependencies() {
-        let mut config = AppConfig::from_default_toml().expect("default config parses");
+        let mut config = test_config();
         config.trading.enabled = true;
         config.trading.mode = "live".to_owned();
         let state = crate::app::AppState::bootstrap(config)
@@ -294,7 +378,7 @@ mod tests {
 
     #[tokio::test]
     async fn health_snapshot_marks_stale_components_unhealthy() {
-        let config = AppConfig::from_default_toml().expect("default config parses");
+        let config = test_config();
         let state = crate::app::AppState::bootstrap(config)
             .await
             .expect("state boots");

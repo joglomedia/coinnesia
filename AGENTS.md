@@ -53,6 +53,11 @@ Each asset class has a distinct signal priority. Never apply one asset's logic t
 15. **Hot path stays fast** — Indicator calculation, signal scoring, risk approval, and order routing must stay memory-first and avoid blocking database calls in per-symbol hot loops.
 16. **Queued side effects** — Telegram delivery, persistence writes that are not execution-critical, and report generation should be worker/queue-driven instead of blocking the scanner hot path.
 17. **Startup reconciliation** — On service startup and periodically during runtime, reconcile exchange orders, balances, and positions against Postgres state before allowing live trading.
+18. **Dual-mode data ingestion** — The system supports `"polling"` (interval-based REST) and `"streaming"` (event-driven WebSocket) scanner modes. Mode is a config switch (`data_sources.scanning_mode`). Never hardcode timing assumptions (e.g., "60-second cycle") in indicator or strategy code; those assumptions only live in the scanner loop.
+19. **CandleStream wraps WebSocket** — All WebSocket streaming logic must go through the `CandleStream` trait in `src/data/stream.rs`. Scanner, supervisor, and strategy modules must never import `tokio-tungstenite` directly. `BinanceWsStream` in `src/data/binance_ws.rs` is the only concrete WebSocket implementation.
+20. **Retry all external I/O** — Every HTTP and WebSocket operation must be wrapped in `data::retry::with_retry()`. Never let a single transient network failure propagate unretried to the scanner hot path. Permanent HTTP 4xx errors (except 429) bypass retry.
+21. **Rate-limit before Binance calls** — Acquire from `RateLimiter` before every Binance REST klines request. Config: `exchange.rate_limit_per_second`. The limiter lives in `src/data/retry.rs`; it is in-process and independent of the Valkey rate-limit bucket (which is for inter-process/distributed throttling).
+22. **Per-symbol data source routing** — Use `SymbolConfig.data_source` to assign a symbol to a specific adapter ("binance" | "tradingview" | "yahoo"). Proxy symbols use `ProxySymbolEntry` (see `[proxy_symbols.xauusd]` etc.) with separate TV/Yahoo symbol strings and a `source` preference. The `PerSymbolMarketData` adapter reads these at startup and builds a routing table — never hard-code symbol-to-source mappings in strategy or scanner code. When `data_source` is absent on a `SymbolConfig`, the adapter derives it from the `exchange` field (binance → "binance"; tradingview → "tradingview"; else global `data_sources.primary`).
 
 ## Coding Conventions
 
@@ -61,7 +66,7 @@ Each asset class has a distinct signal priority. Never apply one asset's logic t
 - Use `anyhow::Result` for error propagation in application code
 - Use `thiserror` for library-level custom errors
 - Async functions use `async fn` with Tokio runtime
-- Prefer `tokio::spawn` + `futures::join_all` for concurrent symbol scanning
+- Prefer `tokio::spawn` plus bounded semaphores for concurrent symbol scanning
 - Use `tracing` crate for structured logging (not `println!` or `log`)
 - Configuration via `serde` + `toml` deserialization
 - All indicator calculations must be deterministic given the same OHLCV input
@@ -129,25 +134,38 @@ All distance calculations (EW, TP, SL, trap thresholds) are expressed as ATR mul
 
 ### Proxy Symbols Are Fetched Once Per Cycle
 
-XAUUSD and IDX:COMPOSITE data should be fetched once at the start of each scan cycle and shared across all symbols that need them. Do not re-fetch per symbol. Prefer `yfinance-rs` for proxy symbols when TradingView auth is unavailable.
+XAUUSD and IDX:COMPOSITE data should be fetched once at the start of each scan cycle and shared across all symbols that need them. Do not re-fetch per symbol. Prefer the internal Yahoo chart fallback for proxy symbols when TradingView auth is unavailable.
 
-### Yahoo Finance (`yfinance-rs`) Usage
+### TradingView Data Source
 
-`yfinance-rs` is the fallback/supplementary data source. No API key required.
+Use `tvdata-rs` as the primary unofficial TradingView dependency for new datasource work. It must be wrapped by `src/data/tradingview.rs` and the internal `MarketDataSource` trait; scanner, strategy, trading, risk, portfolio, and backtest modules must not import `tvdata-rs` directly.
 
-```rust
-let client = YfClient::default();
-let ticker = Ticker::new(&client, "AAPL");
-let history = ticker.history(Some(Range::M6), Some(Interval::D1), false).await?;
-// Returns Vec<Candle { ts, open, high, low, close, volume }>
+`tail-fin-tradingview` is allowed only as an optional secondary dependency for live WebSocket streaming, Pine/catalog tooling, or operational data exploration if `tvdata-rs` cannot cover a required feature. `tradingview-rs` is legacy/backup research material and is not the preferred default dependency.
+
+TradingView auth is optional when guest/public access works. Authenticated values must be loaded from config/env vars and never committed:
+
+```toml
+[data_sources.tradingview]
+enabled = false
+auth_token_env = "TRADINGVIEW_AUTH_TOKEN"
+session_id_env = "TRADINGVIEW_SESSION_ID"
+session_signature_env = "TRADINGVIEW_SESSIONID_SIGN"
+device_token_env = "TRADINGVIEW_DEVICE_T"
 ```
 
-- Use `DownloadBuilder` for concurrent multi-symbol batch fetches
+### Yahoo Finance Chart Fallback
+
+The internal Yahoo chart adapter is the fallback/supplementary data source. No API key required.
+
+```rust
+let source = YahooDataSource::new(config.data_sources.yahoo.clone());
+let candles = source.candles("GC=F", Timeframe::D1, 250).await?;
+```
+
 - Supports daily/weekly/monthly intervals (not intraday sub-daily)
 - Good for: US Stocks, Forex pairs, ETFs, proxy symbols (GC=F for gold, ^JKSE for IHSG, DX-Y.NYB for DXY)
 - Not suitable for: real-time crypto (use Binance), intraday M1/M5/M15 (use TradingView WebSocket)
-- The `adjust` parameter (third bool) controls split/dividend adjustment — use `true` for stocks
-- Data source priority per asset: Binance (crypto) → TradingView (all) → yfinance-rs (fallback)
+- Data source priority per asset: Binance (crypto) → TradingView via `tvdata-rs` (all/intraday) → Yahoo chart fallback
 
 ### Trap Guard Can Block Signals
 
@@ -307,6 +325,21 @@ port = 8080
 request_timeout_secs = 10
 auth_token_env = "COINNESIA_API_TOKEN"
 
+# Alerts
+[alerts]
+enabled = false
+poll_interval_secs = 2
+batch_size = 25
+dedupe_ttl_secs = 300
+
+[alerts.telegram]
+enabled = false
+bot_token_env = "TELEGRAM_BOT_TOKEN"
+chat_id_env = "TELEGRAM_CHAT_ID"
+api_base_url = "https://api.telegram.org"
+parse_mode = "HTML"
+disable_web_page_preview = true
+
 # Database
 [database]
 enabled = false
@@ -449,11 +482,12 @@ slippage_bps = 5
 | `tower` + `tower-http` | HTTP middleware, tracing, CORS, timeouts |
 | `sqlx` | Async Postgres access and migrations |
 | `redis` or `fred` | Redis-compatible Valkey client |
-| `tradingview-rs` | TradingView data fetching |
-| `binance-sdk` | Binance exchange (data + trading) |
-| `yfinance-rs` | Yahoo Finance async client (historical OHLCV, quotes, fallback source) |
-| `ta` | Standard technical indicators (EMA, MACD, RSI base) |
-| `rustygram` | Telegram bot notifications |
+| `tvdata-rs` | Primary unofficial TradingView data fetching adapter |
+| `tail-fin-tradingview` | Optional TradingView live streaming/Pine/catalog tooling adapter when needed |
+| `reqwest` | HTTP client for Binance market data, Yahoo chart fallback, and Telegram Bot API |
+| `binance-sdk` | Optional future Binance account/trading SDK; do not bypass `Exchange` trait |
+| `ta` | Optional reference crate for standard indicators; current indicator hot path is implemented internally |
+| `redis` | Redis-compatible Valkey client |
 | `serde` + `toml` | Configuration deserialization |
 | `anyhow` | Application error handling |
 | `thiserror` | Custom error types |

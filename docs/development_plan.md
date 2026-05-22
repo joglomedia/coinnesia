@@ -1,32 +1,202 @@
 # Execution Development Plan
 
-This plan turns the development timeline in `docs/requirements.md` into an implementation sequence for the current source skeleton.
+This plan turns the development timeline in `docs/requirements.md` into an implementation sequence for the current source tree.
 
-## Current Skeleton Audit
+## Current Implementation Audit
 
-The repository is a compileable Rust scaffold with 73 source files. It already has:
+Status after completing Phase 0 and Phase 1:
 
-- CLI commands for `check-config`, `scan-once`, `scan`, and `backtest`
-- typed TOML config including server, database, cache, runtime, exchange, trading, portfolio, risk, and backtest sections
+- CLI commands for `check-config`, `serve`, `migrate`, `scan-once`, `scan`, `trade`, and `backtest`
+- Axum API routes for `/health`, `/ready`, `/metrics`, `/config`, and authenticated `POST /scan`
+- supervised 24/7 service kernel with graceful shutdown, scanner, alert, trading, and reconciliation workers
+- optional Postgres pool, migration runner, base schema, and repositories for core durable records
+- optional Valkey client with key namespace, TTL JSON/string helpers, dedupe, locks, pub/sub, rate-limit buckets, and heartbeat helpers
+- observability model with component health, heartbeat staleness, readiness, and Prometheus-compatible counters
+- market data ingestion through the internal `MarketDataSource` trait with Binance HTTP klines, TradingView via `tvdata-rs`, Yahoo Finance chart fallback, quotes, batch candles, and proxy prefetch
 - base domain types for assets, timeframes, and candles
-- indicator modules with working EMA, ATR/RMA, RSI, VWAP, volume ratio, MACD scaffold, and placeholder advanced indicators
-- strategy result types, confidence type, session classifier, trap decision type, and ATR-based EW/TP/SL
+- deterministic indicator modules for EMA, ATR/RMA, RSI, ADX/DMI, MACD, VWAP, volume, candle shape, SMC, liquidity sweeps, order blocks, support/resistance, and regime classification
+- six-layer strategy evaluation with asset profile weights, confidence scoring, timeframe thresholds, session gating, trap guard, regime blocking, and ATR-based EW/TP/SL
+- scanner pipeline split into ingestion, analysis, and publishing, with bounded symbol concurrency
+- Valkey latest scan/signal snapshots and signal pub/sub publication
+- Postgres signal evaluation persistence through a bounded publisher worker and queued Telegram alert jobs
+- Telegram alert worker that claims queued jobs, sends via Telegram Bot API, persists delivery attempts, and deduplicates repeated signal alerts through Valkey TTL keys
 - exchange trait plus paper exchange stub
-- placeholder scanner, data providers, trading, portfolio, risk, alerts, and backtest modules
+- placeholder/shell modules remain for full live trading, portfolio, risk expansion, and event-driven backtesting
 
-Major missing architecture pieces:
+Remaining major architecture pieces after Phase 1:
 
-- no `app/` service kernel or worker supervisor
-- no `api/` Axum server
-- no `storage/` Postgres layer or migrations
-- no `cache/` Valkey layer
-- no `observability/` health/readiness/metrics layer
-- no real market data ingestion
-- no real strategy scoring pipeline
-- no durable order/position/risk state
-- no Telegram queue/worker
-- no live Binance implementation
-- no event-driven backtester
+- expanded exchange trait and live Binance trading adapter
+- full paper/live trading engine with order lifecycle, fills, scaling, and reconciliation
+- portfolio and risk modules wired into trading execution
+- event-driven backtester with reports and optimizer
+- read APIs for signals, positions, orders, portfolio, and risk state
+- benchmark harness for scanner cycle time and indicator throughput
+
+## Phase 0 And Phase 1 Audit Result
+
+Audit date: 2026-05-21.
+
+| Area | Status | Evidence |
+|---|---|---|
+| CLI and module scaffold | Complete | `src/main.rs`, `src/app`, `src/api`, `src/storage`, `src/cache`, `src/observability` |
+| Axum API skeleton | Complete | `/health`, `/ready`, `/metrics`, `/config`, authenticated `/scan`, route/auth tests |
+| Service kernel and supervision | Complete | `AppState`, cancellation-token shutdown, supervisor workers, startup gate |
+| Postgres foundation | Complete | migration `20260520000000_phase_0_4_foundation.sql`, repositories, storage integration tests |
+| Valkey foundation | Complete | key builder, TTL helpers, JSON helpers, dedupe, locks, pub/sub, rate-limit buckets, cache tests |
+| Observability | Complete | health/readiness model, heartbeat staleness, metrics endpoint and counters |
+| Market data ingestion | Complete | `MarketDataSource`, Binance HTTP, TradingView `tvdata-rs`, Yahoo chart fallback, proxy prefetch |
+| Indicator completion | Complete | deterministic modules and fixture/parity tests for Phase 1 indicator set |
+| Strategy engine | Complete | six-layer evaluation, confidence scoring, MTF thresholds, session/regime/trap blocking |
+| Scanner pipeline | Complete | ingestion/analysis/publishing split, bounded concurrency, Valkey snapshots, Postgres signal persistence, alert job enqueue |
+| Telegram alert worker | Complete | queued job claim, Telegram Bot API sender, delivery attempts, Valkey TTL dedupe, TP3 optional tests |
+
+Known non-blocking Phase 2+ gaps: full trading execution, live Binance account/order adapter, portfolio/risk execution integration, richer read APIs, event-driven backtester, and benchmark harness.
+
+## Phase 1.5 — Resilience & HFT Foundation
+
+Estimate: 12–16 hours.
+
+Status: **Complete**. Implemented 2026-05-22.
+
+Goal: Harden the data ingestion layer with retry logic and in-process rate limiting to eliminate unhandled HTTP 429 / transient failure scenarios, and upgrade the scanner to support event-driven WebSocket streaming as an alternative to interval-based REST polling. These changes drop observable signal latency from ~60 seconds to sub-200ms for closed-candle events on supported Binance symbols.
+
+### 1.5.1 In-Process Rate Limiter
+
+Estimate: 2 hours. Status: **Complete**.
+
+Files: `src/data/retry.rs` (`RateLimiter`).
+
+Tasks:
+
+- Implement `RateLimiter` as a sliding-window token bucket backed by `Arc<Mutex<...>>`.
+- Wire to `BinanceDataSource` via `config.exchange.rate_limit_per_second`.
+- `acquire()` blocks the caller until a slot is available in the current window; it never drops requests.
+
+Acceptance:
+
+- Binance adapter acquires a rate-limit slot before every HTTP klines request.
+- No HTTP 429 errors under burst conditions when `rate_limit_per_second` is honoured.
+
+### 1.5.2 Retry with Exponential Backoff
+
+Estimate: 2 hours. Status: **Complete**.
+
+Files: `src/data/retry.rs` (`with_retry`), `src/data/binance.rs`, `src/data/tradingview.rs`, `src/data/yahoo.rs`.
+
+Tasks:
+
+- `with_retry(config, operation)` generic helper with exponential backoff and deterministic jitter.
+- `RetryConfig { max_retries, base_delay_ms, max_delay_ms }` added to `[data_sources.retry]` in TOML.
+- Permanent HTTP 4xx errors (except 429) are not retried to avoid unnecessary delay.
+- All three HTTP adapters (Binance, TradingView, Yahoo) wrap their fetch calls in `with_retry`.
+
+Acceptance:
+
+- A transient HTTP 500 or connection reset is retried up to `max_retries` times before propagating.
+- HTTP 400 errors fail immediately without retry.
+- `cargo test -- --test-threads=1` passes with `max_retries = 0` in test configs.
+
+### 1.5.3 Binance WebSocket Stream Client
+
+Estimate: 6 hours. Status: **Complete**.
+
+Files: `src/data/stream.rs`, `src/data/binance_ws.rs`.
+
+Tasks:
+
+- `CandleStream` trait in `src/data/stream.rs`: `subscribe()`, `prime()`, `candles()`, `symbols()`, `run()`.
+- `BinanceWsStream` in `src/data/binance_ws.rs` implements `CandleStream`:
+  - Connects to Binance combined-stream endpoint (`wss://stream.binance.com/stream?streams=...`).
+  - Maintains a per-symbol ring buffer (size: `candle_buffer_size`, default 500).
+  - Broadcasts `CandleEvent { symbol, timeframe, candle, is_closed }` via `tokio::sync::broadcast`.
+  - Auto-reconnects with exponential backoff (`reconnect_base_delay_ms` → `reconnect_max_delay_ms`).
+  - Splits symbol list into chunks of `max_streams_per_connection` (default 200) for multiple connections.
+  - `prime()` seeds buffer with historical candles before stream loop enters.
+  - Graceful shutdown via `CancellationToken`.
+- `data::binance_ws_stream(config)` factory in `src/data/mod.rs` builds the stream if enabled.
+- New Cargo dependency: `tokio-tungstenite = { version = "0.24", features = ["rustls-tls-webpki-roots", "connect"] }`.
+
+Acceptance:
+
+- WebSocket connects to Binance public streams without API credentials.
+- Closed-candle events arrive within one kline interval of bar close.
+- Reconnects automatically after a dropped connection.
+- Shutdown via cancellation token completes cleanly.
+
+### 1.5.4 Event-Driven Scanner Path
+
+Estimate: 3 hours. Status: **Complete**.
+
+Files: `src/scanner/mod.rs` (`run_streaming`, `handle_streaming_event`), `src/app/supervisor.rs` (`run_scanner_worker`).
+
+Tasks:
+
+- `Scanner::run_streaming(stream, shutdown)`:
+  - Seeds stream buffers with historical candles via REST before subscribing.
+  - Subscribes to the broadcast channel.
+  - Ignores intra-bar updates (`is_closed = false`); processes only closed candles.
+  - Calls `analyze()` and `publish()` per symbol event — identical to the polling path.
+- `run_scanner_worker` in `supervisor.rs` checks `config.data_sources.scanning_mode`:
+  - `"streaming"`: calls `run_streaming` with a `BinanceWsStream` if enabled, falls back to polling with a warning.
+  - `"polling"` (default): existing `tokio::time::interval` loop unchanged.
+
+Acceptance:
+
+- `scanning_mode = "streaming"` + `exchange.binance.ws.enabled = true` → event-driven scan.
+- `scanning_mode = "polling"` (default) → existing 60-second interval scan; all existing tests pass.
+- Log line `"streaming mode enabled via Binance WebSocket"` visible at startup in streaming mode.
+
+### 1.5.5 Config and Documentation
+
+Estimate: 1 hour. Status: **Complete**.
+
+New config keys in `config/default.toml`:
+
+```toml
+[data_sources]
+scanning_mode = "polling"   # "polling" | "streaming"
+
+[data_sources.retry]
+max_retries = 3
+base_delay_ms = 500
+max_delay_ms = 10000
+
+[exchange.binance.ws]
+enabled = false
+url = "wss://stream.binance.com/stream"
+max_streams_per_connection = 200
+reconnect_base_delay_ms = 1000
+reconnect_max_delay_ms = 30000
+candle_buffer_size = 500
+```
+
+Updated docs: `AGENTS.md` (rules 18–21), `docs/architecture_audit.md` (gaps + HFT capabilities), `docs/requirements.md` (streaming section), `docs/manual.md` (WebSocket streaming configuration guide).
+
+## Phase 1.6 — Per-Symbol Data Source Routing
+
+Estimate: 4–6 hours.
+
+Status: **Complete**. Implemented 2026-05-22.
+
+Goal: Allow each symbol to declare its preferred data source independently, enabling Forex/stocks symbols to use TradingView, crypto to use Binance, and proxy symbols (XAUUSD, IHSG, DXY) to use TradingView with Yahoo fallback. Replaces the global `ConfiguredMarketData` with `PerSymbolMarketData` which also runs source groups concurrently in `batch_candles` for better throughput.
+
+### Changes
+
+- `SymbolConfig.data_source: Option<String>` — explicit override per symbol; defaults derived from `exchange` field.
+- `ProxySymbolEntry` — replaces flat `ProxySymbols` strings with structured `{ tradingview, yahoo, source }` fields.
+- `PerSymbolMarketData` — new primary data source adapter:
+  - Routing table built once at startup from config
+  - `candles()`: routes to configured adapter + Yahoo fallback if empty
+  - `batch_candles()`: groups by source, runs Binance/TV/Yahoo concurrently via `tokio::join!`, then merges
+- `proxy.rs` updated to use `ProxySymbolEntry.symbol()` as request key
+- All scanner, supervisor, and CLI entry points migrated from `ConfiguredMarketData` to `PerSymbolMarketData`
+- `ProxySymbolEntry::from_yahoo()` helper for tests
+
+### Acceptance
+
+- `cargo test -- --test-threads=1` passes
+- `cargo run -- check-config` succeeds with new proxy_symbols TOML format
+- BTCUSDT routes to Binance; proxy symbols route to TradingView with Yahoo fallback
 
 ## Delivery Principles
 
@@ -42,6 +212,8 @@ Major missing architecture pieces:
 Estimate: 25-35 hours.
 
 Goal: make the project runnable as a 24/7 service shell with API, storage, cache, health, and graceful shutdown. This phase does not need full trading logic.
+
+Status: **Complete**. Implemented in `src/app`, `src/api`, `src/storage`, `src/cache`, `src/observability`, `src/main.rs`, and covered by unit/integration tests.
 
 ### 0.1 Dependencies And Module Scaffold
 
@@ -89,7 +261,7 @@ Tasks:
 
 Acceptance:
 
-- `serve` starts Axum and placeholder workers.
+- `serve` starts Axum and supervised scanner, alert, trading, and reconciliation workers.
 - Ctrl-C triggers graceful shutdown within `runtime.shutdown_timeout_secs`.
 - Health/readiness reflects worker status.
 
@@ -161,6 +333,8 @@ Estimate: 40-50 hours.
 
 Goal: make `scan-once` and `scan` fetch real data, compute indicators, score signals, cache/persist outputs, and enqueue Telegram alerts.
 
+Status: **Complete**. `scan-once` and `scan` now fetch candles, run the strategy engine, cache/persist signal outputs, enqueue alert jobs, and the supervised alert worker delivers/deduplicates Telegram messages when enabled.
+
 ### 1.1 Market Data Ingestion
 
 Estimate: 5 hours.
@@ -170,7 +344,8 @@ Tasks:
 - Expand `MarketDataSource` to support batch candles and quotes.
 - Implement Binance crypto OHLCV fetch.
 - Implement Yahoo Finance fallback for daily/proxy data.
-- Add TradingView adapter scaffold if auth details are available.
+- Implement TradingView adapter with `tvdata-rs` behind the internal `MarketDataSource` trait; keep auth optional and config/env-driven.
+- Keep `tail-fin-tradingview` as an optional later adapter for live streaming/Pine catalog tooling if `tvdata-rs` cannot satisfy a required feature.
 - Implement proxy prefetch once per cycle for XAUUSD/IHSG/DXY.
 
 Acceptance:
@@ -527,4 +702,3 @@ These tasks should be done opportunistically when touching related modules:
 - Backtester produces reports.
 - Docker compose stack works.
 - Operational docs and runbooks are complete.
-

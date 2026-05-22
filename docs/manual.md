@@ -1,19 +1,24 @@
 # coinnesia Manual
 
-This manual explains how to operate and extend the current Rust project foundation. It describes what the code can do today and the boundaries that future implementation should preserve.
+This manual explains how to operate and extend the current Rust project. It describes what the code can do today and the boundaries that future implementation should preserve.
 
 ## 1. Project State
 
-The project is currently a compileable Rust skeleton for a multi-asset signal bot. The codebase includes:
+The project is currently a compileable Rust service foundation and core scanner for a multi-asset signal bot. Phase 0 and Phase 1 are implemented. The codebase includes:
 
 - CLI command routing in `src/main.rs`.
+- Axum API and supervised service runtime in `src/api/` and `src/app/`.
+- Postgres and Valkey foundations in `src/storage/` and `src/cache/`.
 - Config parsing in `src/config/`.
 - Shared market/domain types in `src/lib.rs`.
-- Initial indicator implementations in `src/indicators/`.
-- Strategy output and EW/TP/SL calculators in `src/strategy/`.
-- Exchange, data, alerts, scanner, trading, portfolio, risk, and backtest module boundaries.
+- Market data adapters in `src/data/`.
+- Indicator implementations in `src/indicators/`.
+- Six-layer signal strategy and EW/TP/SL calculators in `src/strategy/`.
+- Scanner ingestion, analysis, and publishing in `src/scanner/`.
+- Telegram alert queue/worker in `src/alerts/`.
+- Exchange, trading, portfolio, risk, and backtest module boundaries.
 
-The code does not yet perform live market scanning, live order execution, Telegram network sending, or historical candle replay.
+The code performs live market-data scanning and Telegram alert delivery when configured. It does not yet perform live order execution or full historical candle replay.
 
 ## 2. Installation
 
@@ -57,12 +62,11 @@ cargo run -- scan-once
 
 Current behavior:
 
-1. Clones the loaded config.
-2. Spawns one async task per configured symbol.
-3. Calls the shared `StrategyEngine`.
-4. Returns placeholder signal results.
-
-Because data adapters are not implemented yet, the strategy receives empty candle slices and returns `WAIT` for insufficient candles.
+1. Fetches proxy symbols once per cycle.
+2. Fetches configured candles through the internal `MarketDataSource`.
+3. Runs bounded concurrent strategy analysis.
+4. Caches latest scan/signal snapshots when Valkey is enabled.
+5. Persists signal evaluations and enqueues alert jobs when Postgres is enabled.
 
 ### Run Scanner
 
@@ -70,13 +74,13 @@ Because data adapters are not implemented yet, the strategy receives empty candl
 cargo run -- scan
 ```
 
-Current behavior is a one-cycle placeholder. The future production version should run a loop with:
+Current behavior is a continuous loop using `runtime.scan_interval_secs` with:
 
 - proxy prefetch once per cycle
 - rate-limited OHLCV fetching
 - concurrent symbol scans
-- alert dispatch
-- optional paper/live trading path
+- cache/database publishing
+- queued alert dispatch
 
 ### Run Backtest
 
@@ -132,7 +136,7 @@ Signals must pass six layers:
 5. Anti-trap
 6. Regime/session
 
-The current strategy engine has the result types and placeholder evaluation path, not the complete six-layer implementation.
+The current strategy engine implements the six-layer flow, confidence thresholds, directional gap checks, trap blocking, and regime/session gating.
 
 ### Entry Plan
 
@@ -217,6 +221,124 @@ max_symbol_tasks = 128
 
 Use Postgres for durable trading, portfolio, signal, alert, order, fill, balance, and backtest data. Use Valkey for hot ephemeral state, scan snapshots, deduplication, locks, and pub/sub.
 
+### Retry and Rate Limiting
+
+```toml
+[data_sources.retry]
+max_retries = 3       # attempts after initial failure (0 = no retry)
+base_delay_ms = 500   # starting backoff delay
+max_delay_ms = 10000  # cap on backoff delay
+
+[exchange]
+rate_limit_per_second = 10  # max Binance REST requests per second
+```
+
+The in-process `RateLimiter` gates every Binance klines request. Requests that exceed the limit are queued (not dropped). All three HTTP adapters (Binance, TradingView, Yahoo) retry transient errors with exponential backoff. Permanent HTTP 4xx errors (except 429) are not retried.
+
+### WebSocket Streaming Mode
+
+By default (`scanning_mode = "polling"`) the scanner runs on a fixed `scan_interval_secs` timer using REST. To switch to event-driven streaming:
+
+```toml
+[data_sources]
+scanning_mode = "streaming"   # "polling" | "streaming"
+
+[exchange.binance.ws]
+enabled = true
+url = "wss://stream.binance.com/stream"   # Binance public combined-stream
+max_streams_per_connection = 200          # symbols per WebSocket connection
+reconnect_base_delay_ms = 1000            # reconnect backoff start
+reconnect_max_delay_ms = 30000            # reconnect backoff cap
+candle_buffer_size = 500                  # ring-buffer depth per symbol
+```
+
+**Behavior in streaming mode:**
+
+1. On startup, seeds each symbol's ring buffer with historical candles via REST (same data source as polling).
+2. Opens Binance combined-stream connections for all symbols with `exchange = "binance"`.
+3. On each **closed** kline event (`is_closed = true`), triggers strategy evaluation and publishing immediately — no fixed wait.
+4. Intra-bar updates (`is_closed = false`) are discarded.
+
+**Latency comparison:**
+
+| Mode | Signal latency | Trigger |
+|---|---|---|
+| `polling` | ~`scan_interval_secs` | Timer |
+| `streaming` | <200ms | Binance kline closed event |
+
+**Limitations:**
+
+- Streaming only covers symbols with `exchange = "binance"` in config. Non-Binance symbols (Forex, IDX stocks, proxy symbols) are not streamed; they receive data only via REST on the next polling cycle if `scanning_mode` falls back, or not at all in pure streaming mode.
+- No Binance API credentials are required for public kline streams.
+- If `scanning_mode = "streaming"` but `exchange.binance.ws.enabled = false`, the scanner falls back to polling with a warning log.
+- Auto-reconnect starts at `reconnect_base_delay_ms` and doubles each attempt up to `reconnect_max_delay_ms`.
+
+**Monitoring:**
+
+- Log line `"streaming mode enabled via Binance WebSocket"` at startup confirms streaming mode.
+- Log line `"WebSocket disconnected, reconnecting in Xms"` on auto-reconnect.
+- Log line `"WebSocket connected"` on each successful connection.
+- `GET /ready` readiness probe monitors scanner heartbeat regardless of mode.
+
+### Per-Symbol Data Source Configuration
+
+Each symbol can declare its own data source, overriding the global `primary`/`fallback` setting:
+
+```toml
+[[symbols]]
+symbol = "BTCUSDT"
+asset_class = "btc"
+exchange = "binance"
+data_source = "binance"        # explicit: use Binance for this symbol
+timeframes = ["15m", "1h", "4h", "1d"]
+
+[[symbols]]
+symbol = "EURUSD"
+asset_class = "forex"
+exchange = "tradingview"
+data_source = "tradingview"    # explicit: use TradingView for Forex
+timeframes = ["1h", "4h", "1d"]
+
+[[symbols]]
+symbol = "AAPL"
+asset_class = "stocks_us"
+exchange = "yahoo"
+data_source = "yahoo"          # explicit: use Yahoo for US equities
+timeframes = ["1d"]
+```
+
+**Default behavior when `data_source` is absent:**
+- `exchange = "binance"` → routes to Binance
+- `exchange = "tradingview"` → routes to TradingView
+- `exchange = "yahoo"` → routes to Yahoo
+- Any other value → uses global `data_sources.primary`
+
+**Proxy symbol configuration** — proxy symbols (XAUUSD, IHSG, DXY) use a structured format with separate TradingView and Yahoo Finance identifiers:
+
+```toml
+[proxy_symbols.xauusd]
+tradingview = "OANDA:XAUUSD"   # TradingView symbol (used when source = "tradingview")
+yahoo = "GC=F"                  # Yahoo Finance symbol (always available as fallback)
+source = "tradingview"          # preferred: "tradingview" | "yahoo"
+
+[proxy_symbols.ihsg]
+tradingview = "IDX:COMPOSITE"
+yahoo = "^JKSE"
+source = "tradingview"
+
+[proxy_symbols.dxy]
+tradingview = "TVC:DXY"
+yahoo = "DX-Y.NYB"
+source = "tradingview"
+```
+
+**Fallback logic:**
+1. `PerSymbolMarketData` tries the preferred source first
+2. If the preferred source returns empty (e.g., TradingView disabled or unauthorized), automatically retries on Yahoo Finance with the `yahoo` symbol
+3. Yahoo Finance only supports D1/W1/Mn1 timeframes — for intraday proxy data, TradingView is recommended
+
+**Performance note:** `PerSymbolMarketData.batch_candles` runs Binance, TradingView, and Yahoo request groups **concurrently**, then merges results. This is significantly faster than the sequential primary→fallback pattern of the old `ConfiguredMarketData` when symbols span multiple data sources.
+
 ## 5. Module Guide
 
 ### `src/config/`
@@ -243,9 +365,13 @@ Implemented:
 - `candle.rs`
 - `volume.rs`
 - `vwap.rs`
-- partial `macd.rs`
-
-Type placeholders exist for ADX/DMI, SMC, liquidity, order blocks, support/resistance, and regime.
+- `macd.rs`
+- `adx.rs`
+- `smc.rs`
+- `liquidity.rs`
+- `order_block.rs`
+- `support_resistance.rs`
+- `regime.rs`
 
 ### `src/strategy/`
 
@@ -261,7 +387,7 @@ Current implemented pieces:
 - session classification
 - trap decision type
 
-The signal generator is intentionally conservative and currently returns `WAIT` for incomplete data or unimplemented layers.
+The signal generator is intentionally conservative and returns `WAIT` or `FREEZE` for incomplete data, blocked sessions, traps, or shock regimes.
 
 ### `src/data/`
 
@@ -272,9 +398,7 @@ Defines the `MarketDataSource` trait. Provider modules exist for:
 - Yahoo Finance
 - proxy symbols
 
-Current providers return empty candle vectors.
-
-The target design requires proxy symbols such as XAUUSD and IHSG to be fetched once per scan cycle, then shared across symbols.
+Binance, TradingView, and Yahoo chart providers are implemented behind the trait. Proxy symbols such as XAUUSD and IHSG are fetched once per scan cycle.
 
 ### `src/exchange/`
 

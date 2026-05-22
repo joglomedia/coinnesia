@@ -4,6 +4,8 @@ Building a high-performance multi-asset trading bot, signal scanner, and portfol
 
 This document is aligned with `docs/architecture_audit.md`: Axum is the required web framework, Postgres is the durable database, and Valkey is the Redis-compatible cache/pub-sub/lock layer.
 
+Implementation status: Phase 0 and Phase 1 are complete in the current codebase. The service runtime, Axum health/config/scan API, Postgres and Valkey foundations, market-data ingestion, indicator suite, strategy scanner pipeline, persisted/cached signal outputs, and Telegram alert worker are implemented and covered by tests. Phase 2+ work remains for live exchange execution, full trading, portfolio/risk integration, and event-driven backtesting.
+
 ## Supported Asset Classes
 
 | Asset Class | Examples | Data Source | Key Characteristics |
@@ -37,13 +39,20 @@ Postgres is the durable source of truth. Valkey is a Redis-compatible hot-state 
 
 **Data Layer**: The foundation fetches OHLCV (Open, High, Low, Close, Volume) data from multiple sources:
 
-1. **`tradingview-rs`** — historical + real-time WebSocket for Stocks (US & Indonesian equities via IDX), Crypto, Forex, Commodities/Gold. Requires auth token from browser cookies; premium subscriptions unlock real-time streaming.
-2. **`binance-sdk`** — historical + real-time WebSocket for Crypto (BTC, Altcoins, PAXG/XAUT gold tokens). Requires API key/secret.
-3. **`yfinance-rs`** — unofficial Yahoo Finance async client for historical OHLCV (daily/weekly/monthly), real-time quotes, and multi-symbol concurrent downloads. No API key required. Used as a fallback or supplementary source for US Stocks, Forex, ETFs, and proxy symbols (XAUUSD, DXY). Uses `Ticker::history(range, interval, adjust)` for single symbols and `DownloadBuilder` for concurrent batch fetches. Returns `Candle { ts, open, high, low, close, volume }`.
-4. **Forex data** — via TradingView or `yfinance-rs` for major/minor/exotic pairs.
-5. **Proxy symbols** — XAUUSD spot for gold token validation, IDX:COMPOSITE (IHSG) for Indonesian equities benchmark, DXY for macro context. Fetched via TradingView or `yfinance-rs`.
+1. **`tvdata-rs`** — primary unofficial TradingView adapter for backend market-data ingestion. It is preferred over `tradingview-rs` because it has a broader backend-oriented surface for history, quotes, scanner/search/calendar workflows, auth modes, retry/request-budget configuration, and capability-aware validation. Use it behind the internal `MarketDataSource` trait, not directly from scanner/strategy code.
+   - **Optional companion**: `tail-fin-tradingview` may be added later for feature-rich live WebSocket streaming, Pine/catalog tooling, or operational data exploration if `tvdata-rs` does not cover a required TradingView feature.
+   - **Not preferred**: `tradingview-rs` is treated as legacy/backup research material and should not be the default project dependency for new TradingView datasource work.
+2. **Binance HTTP/WebSocket adapter** — historical and near-real-time crypto market data for BTC, altcoins, and PAXG/XAUT gold tokens. Public klines do not require API credentials; account/trading endpoints require API key/secret.
+   - **WebSocket streaming** (`BinanceWsStream`, `src/data/binance_ws.rs`): event-driven kline stream using Binance combined-stream endpoint. Enabled via `data_sources.scanning_mode = "streaming"` + `exchange.binance.ws.enabled = true`. Reduces signal latency from ~60 s (polling) to <200 ms (closed-bar event). Covers only symbols with `exchange = "binance"` in config.
+3. **Yahoo Finance chart adapter** — fallback/supplementary historical OHLCV for daily/weekly/monthly data and proxy symbols (XAUUSD, DXY, IHSG-style benchmarks). No API key required.
+4. **Forex data** — via TradingView or Yahoo Finance chart fallback for major/minor/exotic pairs.
+5. **Proxy symbols** — XAUUSD spot for gold token validation, IDX:COMPOSITE (IHSG) for Indonesian equities benchmark, DXY for macro context. Fetched via TradingView or Yahoo Finance chart fallback.
 
-This layer handles authentication, rate limiting, concurrent data fetching for multiple symbols, and session-aware scheduling (Asia/Europe/USA timezone gating). Each symbol's asset profile determines which data source is preferred, with fallback ordering: primary source → `yfinance-rs` fallback.
+This layer handles authentication, rate limiting, concurrent data fetching for multiple symbols, and session-aware scheduling (Asia/Europe/USA timezone gating). Each symbol's asset profile determines which data source is preferred, with fallback ordering: Binance (crypto) → TradingView via `tvdata-rs` → Yahoo Finance chart fallback.
+
+**Resilience layer**: All HTTP adapters wrap their fetch calls in `data::retry::with_retry()` (exponential backoff, configurable via `[data_sources.retry]`). The Binance adapter additionally gates every request through an in-process `RateLimiter` to honour `exchange.rate_limit_per_second` and prevent HTTP 429 responses. WebSocket connections auto-reconnect with backoff on disconnect.
+
+**Per-symbol data source routing** (`PerSymbolMarketData`, `src/data/mod.rs`): Each symbol is assigned a preferred data source via `SymbolConfig.data_source` or inferred from `exchange`. Proxy symbols (`ProxySymbolEntry`) carry separate TradingView and Yahoo Finance symbol identifiers with an explicit `source` preference and automatic Yahoo fallback. `PerSymbolMarketData.batch_candles` groups requests by source and executes Binance, TradingView, and Yahoo groups **concurrently** for maximum throughput.
 
 **Service Runtime Layer**: Owns 24/7 operation. It starts and supervises the Axum API, scanner workers, alert workers, trading execution workers, reconciliation workers, and graceful shutdown. Live trading must remain disabled until startup reconciliation confirms exchange, Postgres, risk, and kill-switch state are consistent.
 
@@ -53,11 +62,11 @@ This layer handles authentication, rate limiting, concurrent data fetching for m
 
 **Cache / Coordination Layer**: Valkey stores hot ephemeral state: latest scan snapshots, latest signal per symbol/timeframe, deduplication keys, worker heartbeat, pub/sub events, distributed locks, rate-limit buckets, cooldown markers, and indicator caches. Valkey accelerates the hot path but does not replace Postgres.
 
-**Indicator Layer**: Technical indicators are calculated using a combination of the **`ta`** crate for standard indicators (RSI, MACD, EMA, ADX) and custom implementations for SMC structure, liquidity sweep, session-normalized volume, wick/body/CLV analysis, regime classification, and trap detection. Each indicator is modular and testable, with configurable parameters loaded from the TOML configuration file. Indicator weights are **asset-adaptive** — different asset classes emphasize different indicator combinations.
+**Indicator Layer**: Technical indicators are implemented as deterministic internal modules for EMA, ATR/RMA, RSI, ADX/DMI, MACD, VWAP, volume, SMC structure, liquidity sweep, session-normalized volume, wick/body/CLV analysis, regime classification, and trap detection. Each indicator is modular and testable, with configurable parameters loaded from the TOML configuration file. Indicator weights are **asset-adaptive** — different asset classes emphasize different indicator combinations.
 
 **Strategy Layer**: The signal detection engine uses a **multi-layer confidence scoring system** with asset-adaptive weighting. It evaluates trend structure (BOS/CHOCH), momentum (RSI/MACD/ADX), volume flow, trap risk, session context, and regime state. Signals are generated only when confidence exceeds asset-specific thresholds and no blocking conditions (trap, shock, chop) are active. The engine supports LONG, SHORT, WAIT, and FREEZE states.
 
-**Alert Layer**: Telegram notifications are handled through the **`rustygram`** crate, delivering formatted alerts with signal details, indicator values, entry windows (EW1/EW2/EW3), TP1/TP2/TP3 targets, stop loss levels, and direct links to TradingView charts.
+**Alert Layer**: Telegram notifications are handled by the internal alert worker through the Telegram Bot API over `reqwest`. The worker reads queued alert jobs from Postgres, sends formatted messages, persists delivery attempts, and deduplicates repeated signal alerts through Valkey TTL keys. TP3 is always labelled optional.
 
 Alert delivery should be queue-driven. The scanner emits alert jobs; an alert worker sends Telegram messages, persists delivery attempts, and deduplicates repeated signals.
 
@@ -811,7 +820,7 @@ src/
 │   ├── mod.rs              # Data layer orchestration
 │   ├── tradingview.rs      # TradingView fetcher
 │   ├── binance.rs          # Binance fetcher
-│   ├── yahoo.rs            # Yahoo Finance fetcher (yfinance-rs)
+│   ├── yahoo.rs            # Yahoo Finance chart fallback fetcher
 │   └── proxy.rs            # Proxy symbol fetcher (XAUUSD, IHSG, DXY)
 ├── storage/
 │   ├── mod.rs              # Postgres pool + repository registry
@@ -945,8 +954,8 @@ The service uses Tokio's async runtime to run the Axum API, scanner, trading wor
 **Key async patterns employed**:
 
 1. **Task Spawning**: Each symbol scan runs as an independent async task using `tokio::spawn`
-2. **Futures Joining**: Multiple symbol scans execute in parallel using `futures::join_all`
-3. **Channel Communication**: `mpsc` channels coordinate between scanner and alerter
+2. **Task Joining**: Multiple symbol scans execute in parallel and are joined after bounded analysis tasks finish
+3. **Bounded Channel Communication**: `mpsc` channels coordinate scanner publishing into Postgres persistence workers
 4. **Error Handling**: Graceful degradation when individual symbol scans fail
 5. **Rate Limiting**: Semaphores control concurrent API requests to respect TradingView/Binance limits
 6. **Proxy Prefetch**: XAUUSD and IHSG data fetched once per cycle, shared across relevant symbols
@@ -1015,41 +1024,44 @@ Valkey is not a replacement for Postgres. Durable trading, portfolio, risk, and 
 
 ### Data Fetching
 
-The `tradingview-rs` and `binance-sdk` crates provide both synchronous and asynchronous data fetching:
+TradingView ingestion should use `tvdata-rs` as the primary unofficial TradingView dependency. Keep all TradingView calls behind `data::TradingViewDataSource` and the internal `MarketDataSource` trait so the scanner, strategy, trading, portfolio, and backtest modules never depend on a third-party TradingView crate directly.
+
+Recommended `tvdata-rs` usage:
 
 ```rust
-// Batch fetching for efficiency
-let datamap = history::batch::retrieve()
-    .auth_token(&self.auth_token)
-    .symbols(&tv_symbols)
-    .interval(interval)
-    .bar_count(bars)
-    .server(DataServer::ProData)
-    .call()
+// Pseudocode only: keep the exact crate API isolated inside data/tradingview.rs.
+let tv = TradingViewClient::from_config(&config.data_sources.tradingview).await?;
+let candles = tv.history()
+    .symbol("NASDAQ:AAPL")
+    .interval("1D")
+    .limit(250)
+    .fetch()
     .await?;
 ```
 
-Authentication requires a TradingView auth token obtained from browser cookies after logging in, and Binance API key/secret. TradingView premium subscriptions unlock additional features like real-time data streaming via WebSocket.
+`tail-fin-tradingview` is approved as an optional second TradingView dependency only when a feature requires richer live WebSocket streaming, Pine/catalog scraping, or TradingView tooling beyond the `tvdata-rs` adapter. Do not mix both crates in scanner hot-path code; put any secondary implementation behind the same internal trait.
 
-Yahoo Finance via `yfinance-rs` requires no authentication:
+Authentication can run in guest/public mode when supported. For authenticated or premium data, load browser-derived TradingView values through config/env vars only:
 
-```rust
-// Yahoo Finance — fallback/supplementary source
-let client = YfClient::default();
-let ticker = Ticker::new(&client, "AAPL");
-let history = ticker.history(Some(Range::M6), Some(Interval::D1), true).await?;
-// Returns Vec<Candle { ts, open, high, low, close, volume }>
-
-// Batch concurrent download
-let download = DownloadBuilder::new(&client)
-    .symbols(&["AAPL", "TSLA", "GC=F", "EURUSD=X"])
-    .range(Range::M3)
-    .interval(Interval::D1)
-    .build()
-    .await?;
+```toml
+[data_sources.tradingview]
+enabled = false
+auth_token_env = "TRADINGVIEW_AUTH_TOKEN"
+session_id_env = "TRADINGVIEW_SESSION_ID"
+session_signature_env = "TRADINGVIEW_SESSIONID_SIGN"
+device_token_env = "TRADINGVIEW_DEVICE_T"
 ```
 
-**Data source priority**: Binance (crypto real-time) → TradingView (all assets, intraday) → `yfinance-rs` (fallback for daily+ data, proxy symbols, no-auth scenarios).
+Never commit TradingView cookies, browser session IDs, or auth tokens. Binance API key/secret are also loaded from config/env vars and are required only for authenticated exchange/account features; public Binance klines do not require credentials.
+
+Yahoo Finance chart fallback requires no authentication:
+
+```rust
+// Pseudocode: implementation lives behind data::YahooDataSource.
+let candles = yahoo.candles("GC=F", Timeframe::D1, 250).await?;
+```
+
+**Data source priority**: Binance (crypto real-time) → TradingView via `tvdata-rs` (all assets, intraday) → Yahoo Finance chart fallback (daily+ data, proxy symbols, no-auth scenarios).
 
 ### Error Handling and Resilience
 
@@ -1066,7 +1078,7 @@ The bot implements comprehensive error handling using Rust's `Result` type and t
 
 ### Alert System
 
-Telegram provides an excellent notification platform with rich formatting capabilities.
+Telegram provides an excellent notification platform with rich formatting capabilities. The current implementation uses the Telegram Bot API directly through `reqwest` behind the internal `AlertSink` trait, so alternate Telegram crates can still be introduced later without changing scanner code.
 
 **Message Format**:
 
@@ -1085,7 +1097,7 @@ Alerts include:
 - Timestamp (WIB)
 - Direct link to TradingView chart
 
-The `rustygram` crate simplifies Telegram integration with minimal boilerplate.
+The alert worker claims pending jobs from Postgres, applies Valkey TTL dedupe, sends the message, records a delivery attempt, and marks the job as delivered, failed, or deduplicated. Telegram failures are recorded and do not crash the scanner.
 
 ### Performance Optimization
 
@@ -1197,7 +1209,7 @@ pub trait Exchange: Send + Sync {
 
 | Platform | Status | Module | Notes |
 |---|---|---|---|
-| **Binance** | Default, fully implemented | `exchange/binance.rs` | Spot + Futures, testnet supported |
+| **Binance** | Market data implemented, live trading pending | `data/binance.rs`, `exchange/binance.rs` | Public klines work; account/trading adapter is Phase 2 |
 | **MEXC** | Future | `exchange/mexc.rs` | Spot + Futures |
 | **ByBit** | Future | `exchange/bybit.rs` | Unified account, Spot + Derivatives |
 | **OKX** | Future | `exchange/okx.rs` | Unified account, Spot + Futures |
@@ -1667,14 +1679,14 @@ cargo run --release -- trade --paper --config config.toml
 
 Based on the full multi-asset implementation with 24/7 service runtime, API, persistence, cache, trading, portfolio, risk, and backtesting modules, estimated development time is **170-230 hours**:
 
-**Phase 0 — Production Runtime Foundation (25-35 hours)**:
+**Phase 0 — Production Runtime Foundation (25-35 hours) — implemented**:
 - Axum API skeleton, health/readiness, auth middleware: 6 hours
 - Service kernel, worker supervision, graceful shutdown: 7 hours
 - Postgres pool, migrations, base repositories: 8 hours
 - Valkey client, key namespace, locks, pub/sub, TTL cache: 6 hours
 - Observability and metrics foundation: 4 hours
 
-**Phase 1 — Core Scanner (40-50 hours)**:
+**Phase 1 — Core Scanner (40-50 hours) — implemented**:
 - Project setup and dependencies: 2 hours
 - Data fetching module (TradingView + Binance + Yahoo Finance + proxy): 5 hours
 - Core indicator implementations (EMA, ATR, RSI, ADX, MACD, VWAP, Volume): 10 hours
@@ -1726,7 +1738,7 @@ Based on the full multi-asset implementation with 24/7 service runtime, API, per
 
 **"Insufficient data" Errors**: Increase `history_bars` in configuration to fetch more historical data. Some indicators (EMA200) need at least 200+ bars.
 
-**TradingView Rate Limiting**: Reduce symbol count or increase `interval_seconds`. Use batch API calls.
+**TradingView Rate Limiting**: Reduce symbol count or increase `interval_seconds`. Use `tvdata-rs` request-budget/retry controls where available and batch API calls through the internal datasource adapter.
 
 **Telegram Messages Not Sending**: Verify bot token and chat ID are correct. Check bot has permission to send messages to target chat.
 

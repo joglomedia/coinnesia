@@ -1,3 +1,5 @@
+use std::sync::Arc;
+
 use axum::{extract::State, http::StatusCode, Json};
 use serde_json::{json, Value};
 
@@ -5,6 +7,8 @@ use crate::{
     api::auth::ApiAuth,
     api::dto::{ConfigSummary, HealthResponse},
     app::AppState,
+    data::ConfiguredMarketData,
+    scanner::Scanner,
 };
 
 pub async fn health(State(state): State<AppState>) -> Json<HealthResponse> {
@@ -42,12 +46,39 @@ pub async fn config_summary(State(state): State<AppState>) -> Json<ConfigSummary
     Json(ConfigSummary::from_config(&state.config))
 }
 
-pub async fn scan_trigger_placeholder(
-    State(_state): State<AppState>,
+pub async fn scan_trigger(
+    State(state): State<AppState>,
     _auth: ApiAuth,
-) -> Json<Value> {
-    Json(json!({
-        "accepted": true,
-        "reason": "scan trigger endpoint scaffolded; scanner service wiring pending"
-    }))
+) -> (StatusCode, Json<Value>) {
+    let scanner = Scanner::with_resources(
+        (*state.config).clone(),
+        Arc::new(ConfiguredMarketData::from_config(&state.config)),
+        state.db.clone(),
+        state.cache.clone(),
+    );
+    match scanner.scan_once().await {
+        Ok(report) => {
+            state.metrics.inc_scan_cycle();
+            state.metrics.add_symbols_scanned(report.scanned as u64);
+            state
+                .metrics
+                .add_signals_generated(report.signals.len() as u64);
+            (
+                StatusCode::OK,
+                Json(json!({
+                    "accepted": true,
+                    "cycle_id": report.cycle_id,
+                    "scanned": report.scanned,
+                    "signals": report.signals.len()
+                })),
+            )
+        }
+        Err(error) => (
+            StatusCode::BAD_GATEWAY,
+            Json(json!({
+                "accepted": false,
+                "reason": format!("scan failed: {error}")
+            })),
+        ),
+    }
 }

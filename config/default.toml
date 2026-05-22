@@ -68,19 +68,31 @@ port = 8080
 request_timeout_secs = 10
 auth_token_env = "COINNESIA_API_TOKEN"
 
-[database]
+[alerts]
 enabled = false
+poll_interval_secs = 2
+batch_size = 25
+dedupe_ttl_secs = 300
+
+[alerts.telegram]
+enabled = false
+bot_token_env = "TELEGRAM_BOT_TOKEN"
+chat_id_env = "TELEGRAM_CHAT_ID"
+api_base_url = "https://api.telegram.org"
+parse_mode = "HTML"
+disable_web_page_preview = true
+
+[database]
+enabled = true
 url_env = "DATABASE_URL"
-#url_env = "postgres://coinnesia:coinnesia@localhost:5432/coinnesia"
 max_connections = 10
 min_connections = 1
 connect_timeout_secs = 5
 migrate_on_start = false
 
 [cache]
-enabled = false
+enabled = true
 url_env = "VALKEY_URL"
-#url_env = "redis://localhost:6379/0"
 key_prefix = "coinnesia"
 pool_size = 10
 ttl_seconds = 300
@@ -91,10 +103,52 @@ shutdown_timeout_secs = 15
 max_symbol_tasks = 128
 health_stale_after_secs = 180
 
+[data_sources]
+primary = "binance"
+fallback = "yahoo"
+candle_limit = 250
+scanning_mode = "polling"
+
+[data_sources.retry]
+max_retries = 3
+base_delay_ms = 500
+max_delay_ms = 10000
+
+[data_sources.yahoo]
+enabled = true
+base_url = "https://query1.finance.yahoo.com"
+adjust = true
+
+[data_sources.tradingview]
+enabled = false
+auth_token_env = "TRADINGVIEW_AUTH_TOKEN"
+session_id_env = "TRADINGVIEW_SESSION_ID"
+session_signature_env = "TRADINGVIEW_SESSIONID_SIGN"
+device_token_env = "TRADINGVIEW_DEVICE_T"
+
 [exchange]
 platform = "paper"
 testnet = true
 rate_limit_per_second = 10
+
+[exchange.binance]
+api_key_env = "BINANCE_API_KEY"
+api_secret_env = "BINANCE_API_SECRET"
+account_type = "spot"
+recv_window = 5
+testnet = false
+market_data_mode = "http"
+http_poll_interval = 1
+rest_url = "https://api.binance.com"
+websocket_url = "wss://stream.binance.com:9443"
+
+[exchange.binance.ws]
+enabled = false
+url = "wss://stream.binance.com/stream"
+max_streams_per_connection = 200
+reconnect_base_delay_ms = 1000
+reconnect_max_delay_ms = 30000
+candle_buffer_size = 500
 
 [trading]
 enabled = false
@@ -162,21 +216,34 @@ slippage_bps = 5.0
 symbol = "BTCUSDT"
 asset_class = "btc"
 exchange = "binance"
+data_source = "binance"
 timeframes = ["15m", "1h", "4h", "1d"]
 
 [[symbols]]
 symbol = "ETHUSDT"
 asset_class = "btc"
 exchange = "binance"
+data_source = "binance"
 timeframes = ["15m", "1h", "4h", "1d"]
 
 [[symbols]]
 symbol = "PAXGUSDT"
 asset_class = "gold"
 exchange = "binance"
+data_source = "binance"
 timeframes = ["1h", "4h", "1d"]
 
-[proxy_symbols]
-xauusd = "GC=F"
-ihsg = "^JKSE"
-dxy = "DX-Y.NYB"
+[proxy_symbols.xauusd]
+tradingview = "OANDA:XAUUSD"
+yahoo = "GC=F"
+source = "tradingview"
+
+[proxy_symbols.ihsg]
+tradingview = "IDX:COMPOSITE"
+yahoo = "^JKSE"
+source = "tradingview"
+
+[proxy_symbols.dxy]
+tradingview = "TVC:DXY"
+yahoo = "DX-Y.NYB"
+source = "tradingview"

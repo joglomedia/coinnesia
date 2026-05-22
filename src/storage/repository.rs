@@ -5,6 +5,7 @@ use sqlx::{query, query_as};
 use uuid::Uuid;
 
 use super::{
+    alerts::{AlertDeliveryRecord, AlertJobRecord},
     backtests::BacktestRunRecord,
     fills::FillRecord,
     orders::OrderRecord,
@@ -34,6 +35,11 @@ pub struct RiskEventRepository {
     db: Db,
 }
 
+#[derive(Clone)]
+pub struct AlertRepository {
+    db: Db,
+}
+
 impl Db {
     pub fn signals(&self) -> SignalRepository {
         SignalRepository { db: self.clone() }
@@ -49,6 +55,10 @@ impl Db {
 
     pub fn risk_events(&self) -> RiskEventRepository {
         RiskEventRepository { db: self.clone() }
+    }
+
+    pub fn alerts(&self) -> AlertRepository {
+        AlertRepository { db: self.clone() }
     }
 
     pub async fn insert_signal(&self, signal: &SignalRecord) -> Result<()> {
@@ -128,6 +138,163 @@ impl Db {
     }
 }
 
+impl AlertRepository {
+    pub async fn append_job(&self, job: &AlertJobRecord) -> Result<()> {
+        query(
+            r#"
+            INSERT INTO alert_jobs (
+                id, signal_id, channel, status, payload, dedupe_key,
+                scheduled_at, delivered_at, created_at
+            )
+            VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)
+            ON CONFLICT (dedupe_key) WHERE dedupe_key IS NOT NULL DO NOTHING
+            "#,
+        )
+        .bind(job.id)
+        .bind(job.signal_id)
+        .bind(&job.channel)
+        .bind(&job.status)
+        .bind(&job.payload)
+        .bind(&job.dedupe_key)
+        .bind(job.scheduled_at)
+        .bind(job.delivered_at)
+        .bind(job.created_at)
+        .execute(self.db.pool())
+        .await
+        .context("failed to insert alert job")?;
+        Ok(())
+    }
+
+    pub async fn get_job(&self, id: Uuid) -> Result<AlertJobRecord> {
+        query_as::<_, AlertJobRecord>(
+            r#"
+            SELECT
+                id, signal_id, channel, status, payload, dedupe_key,
+                scheduled_at, delivered_at, created_at
+            FROM alert_jobs
+            WHERE id = $1
+            "#,
+        )
+        .bind(id)
+        .fetch_one(self.db.pool())
+        .await
+        .context("failed to fetch alert job")
+    }
+
+    pub async fn claim_pending_jobs(&self, limit: usize) -> Result<Vec<AlertJobRecord>> {
+        query_as::<_, AlertJobRecord>(
+            r#"
+            WITH selected AS (
+                SELECT id
+                FROM alert_jobs
+                WHERE status = 'pending'
+                  AND scheduled_at <= NOW()
+                ORDER BY scheduled_at ASC
+                LIMIT $1
+                FOR UPDATE SKIP LOCKED
+            )
+            UPDATE alert_jobs AS job
+            SET status = 'processing'
+            FROM selected
+            WHERE job.id = selected.id
+            RETURNING
+                job.id, job.signal_id, job.channel, job.status, job.payload,
+                job.dedupe_key, job.scheduled_at, job.delivered_at, job.created_at
+            "#,
+        )
+        .bind(limit as i64)
+        .fetch_all(self.db.pool())
+        .await
+        .context("failed to claim pending alert jobs")
+    }
+
+    pub async fn mark_delivered(&self, id: Uuid, delivered_at: DateTime<Utc>) -> Result<()> {
+        query(
+            r#"
+            UPDATE alert_jobs
+            SET status = 'delivered', delivered_at = $2
+            WHERE id = $1
+            "#,
+        )
+        .bind(id)
+        .bind(delivered_at)
+        .execute(self.db.pool())
+        .await
+        .context("failed to mark alert job delivered")?;
+        Ok(())
+    }
+
+    pub async fn mark_failed(&self, id: Uuid) -> Result<()> {
+        query(
+            r#"
+            UPDATE alert_jobs
+            SET status = 'failed'
+            WHERE id = $1
+            "#,
+        )
+        .bind(id)
+        .execute(self.db.pool())
+        .await
+        .context("failed to mark alert job failed")?;
+        Ok(())
+    }
+
+    pub async fn mark_deduplicated(&self, id: Uuid) -> Result<()> {
+        query(
+            r#"
+            UPDATE alert_jobs
+            SET status = 'deduplicated'
+            WHERE id = $1
+            "#,
+        )
+        .bind(id)
+        .execute(self.db.pool())
+        .await
+        .context("failed to mark alert job deduplicated")?;
+        Ok(())
+    }
+
+    pub async fn append_delivery(&self, delivery: &AlertDeliveryRecord) -> Result<()> {
+        query(
+            r#"
+            INSERT INTO alert_deliveries (
+                id, alert_job_id, channel, success, provider_message_id,
+                error, attempted_at
+            )
+            VALUES ($1,$2,$3,$4,$5,$6,$7)
+            "#,
+        )
+        .bind(delivery.id)
+        .bind(delivery.alert_job_id)
+        .bind(&delivery.channel)
+        .bind(delivery.success)
+        .bind(&delivery.provider_message_id)
+        .bind(&delivery.error)
+        .bind(delivery.attempted_at)
+        .execute(self.db.pool())
+        .await
+        .context("failed to insert alert delivery attempt")?;
+        Ok(())
+    }
+
+    pub async fn deliveries_for_job(&self, alert_job_id: Uuid) -> Result<Vec<AlertDeliveryRecord>> {
+        query_as::<_, AlertDeliveryRecord>(
+            r#"
+            SELECT
+                id, alert_job_id, channel, success, provider_message_id,
+                error, attempted_at
+            FROM alert_deliveries
+            WHERE alert_job_id = $1
+            ORDER BY attempted_at ASC
+            "#,
+        )
+        .bind(alert_job_id)
+        .fetch_all(self.db.pool())
+        .await
+        .context("failed to fetch alert delivery attempts")
+    }
+}
+
 impl SignalRepository {
     pub async fn append(&self, signal: &SignalRecord) -> Result<()> {
         query(
@@ -171,6 +338,26 @@ impl SignalRepository {
         .fetch_one(self.db.pool())
         .await
         .context("failed to fetch signal evaluation")
+    }
+
+    pub async fn get_by_cycle_symbol(&self, cycle_id: Uuid, symbol: &str) -> Result<SignalRecord> {
+        query_as::<_, SignalRecord>(
+            r#"
+            SELECT
+                id, symbol, timeframe, asset_class, state, direction,
+                confidence, directional_gap, reason, entry_plan, indicators, evaluated_at
+            FROM signal_evaluations
+            WHERE indicators->>'cycle_id' = $1
+              AND symbol = $2
+            ORDER BY evaluated_at DESC
+            LIMIT 1
+            "#,
+        )
+        .bind(cycle_id.to_string())
+        .bind(symbol)
+        .fetch_one(self.db.pool())
+        .await
+        .context("failed to fetch signal evaluation by cycle and symbol")
     }
 }
 

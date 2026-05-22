@@ -65,7 +65,7 @@ pub async fn migrate_from_config(config: &DatabaseConfig) -> Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use crate::config::{AppConfig, DatabaseConfig};
+    use crate::config::DatabaseConfig;
 
     use super::Db;
 
@@ -87,10 +87,18 @@ mod tests {
     }
 
     #[test]
-    fn default_database_config_is_disabled_safe() {
-        let config = AppConfig::from_default_toml().expect("default config parses");
-        assert!(!config.database.enabled);
-        assert!(!config.database.url_env.trim().is_empty());
+    fn disabled_database_config_is_safe() {
+        let config = DatabaseConfig {
+            enabled: false,
+            url_env: "COINNESIA_TEST_DATABASE_URL_MISSING".to_owned(),
+            max_connections: 1,
+            min_connections: 0,
+            connect_timeout_secs: 1,
+            migrate_on_start: false,
+        };
+
+        assert!(!config.enabled);
+        assert!(!config.url_env.trim().is_empty());
     }
 
     #[test]

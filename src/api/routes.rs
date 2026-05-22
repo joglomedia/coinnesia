@@ -15,7 +15,7 @@ pub fn router(state: AppState) -> Router {
         .route("/ready", get(handlers::ready))
         .route("/metrics", get(handlers::metrics))
         .route("/config", get(handlers::config_summary))
-        .route("/scan", post(handlers::scan_trigger_placeholder))
+        .route("/scan", post(handlers::scan_trigger))
         .layer(middleware::from_fn_with_state(
             state.clone(),
             metrics::record_api_metrics,
@@ -37,7 +37,12 @@ mod tests {
 
     async fn test_router(auth_token_env: &str) -> axum::Router {
         let mut config = AppConfig::from_default_toml().expect("default config parses");
+        config.database.enabled = false;
+        config.cache.enabled = false;
+        config.alerts.enabled = false;
         config.server.auth_token_env = auth_token_env.to_owned();
+        config.data_sources.primary = "empty".to_owned();
+        config.data_sources.fallback = "empty".to_owned();
         let state = AppState::bootstrap(config).await.expect("state boots");
         state.health.set_component("supervisor", true);
         state.health.set_component("scanner", true);
@@ -102,7 +107,10 @@ mod tests {
 
     #[tokio::test]
     async fn ready_reports_unavailable_when_component_is_unhealthy() {
-        let config = AppConfig::from_default_toml().expect("default config parses");
+        let mut config = AppConfig::from_default_toml().expect("default config parses");
+        config.database.enabled = false;
+        config.cache.enabled = false;
+        config.alerts.enabled = false;
         let state = AppState::bootstrap(config).await.expect("state boots");
         let app = router(state);
         let response = app
@@ -123,6 +131,9 @@ mod tests {
     #[tokio::test]
     async fn ready_reports_unavailable_when_worker_heartbeat_is_stale() {
         let mut config = AppConfig::from_default_toml().expect("default config parses");
+        config.database.enabled = false;
+        config.cache.enabled = false;
+        config.alerts.enabled = false;
         config.runtime.health_stale_after_secs = 0;
         let state = AppState::bootstrap(config).await.expect("state boots");
         state.health.set_component("supervisor", true);
@@ -204,6 +215,9 @@ mod tests {
     #[tokio::test]
     async fn health_response_includes_heartbeat_metadata() {
         let mut config = AppConfig::from_default_toml().expect("default config parses");
+        config.database.enabled = false;
+        config.cache.enabled = false;
+        config.alerts.enabled = false;
         config.runtime.health_stale_after_secs = 60;
         let state = AppState::bootstrap(config).await.expect("state boots");
         state.health.heartbeat("scanner");

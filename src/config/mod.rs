@@ -15,9 +15,11 @@ pub struct AppConfig {
     pub trap_guard: TrapGuardConfig,
     pub session: SessionConfig,
     pub server: ServerConfig,
+    pub alerts: AlertsConfig,
     pub database: DatabaseConfig,
     pub cache: CacheConfig,
     pub runtime: RuntimeConfig,
+    pub data_sources: DataSourcesConfig,
     pub exchange: ExchangeConfig,
     pub trading: TradingConfig,
     pub portfolio: PortfolioConfig,
@@ -122,6 +124,25 @@ pub struct ServerConfig {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AlertsConfig {
+    pub enabled: bool,
+    pub poll_interval_secs: u64,
+    pub batch_size: usize,
+    pub dedupe_ttl_secs: u64,
+    pub telegram: TelegramAlertConfig,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TelegramAlertConfig {
+    pub enabled: bool,
+    pub bot_token_env: String,
+    pub chat_id_env: String,
+    pub api_base_url: String,
+    pub parse_mode: String,
+    pub disable_web_page_preview: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DatabaseConfig {
     pub enabled: bool,
     pub url_env: String,
@@ -149,10 +170,71 @@ pub struct RuntimeConfig {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DataSourcesConfig {
+    pub primary: String,
+    pub fallback: String,
+    pub candle_limit: usize,
+    pub scanning_mode: String,
+    pub retry: RetryConfig,
+    pub yahoo: YahooDataSourceConfig,
+    pub tradingview: TradingViewDataSourceConfig,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RetryConfig {
+    pub max_retries: u32,
+    pub base_delay_ms: u64,
+    pub max_delay_ms: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct YahooDataSourceConfig {
+    pub enabled: bool,
+    pub base_url: String,
+    pub adjust: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TradingViewDataSourceConfig {
+    pub enabled: bool,
+    pub auth_token_env: String,
+    pub session_id_env: String,
+    pub session_signature_env: String,
+    pub device_token_env: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ExchangeConfig {
     pub platform: String,
     pub testnet: bool,
     pub rate_limit_per_second: usize,
+    pub binance: BinanceConfig,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BinanceConfig {
+    pub api_key: Option<String>,
+    pub api_secret: Option<String>,
+    pub api_key_env: String,
+    pub api_secret_env: String,
+    pub account_type: String,
+    pub recv_window: u64,
+    pub testnet: bool,
+    pub market_data_mode: String,
+    pub http_poll_interval: u64,
+    pub rest_url: String,
+    pub websocket_url: String,
+    pub ws: BinanceWsConfig,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BinanceWsConfig {
+    pub enabled: bool,
+    pub url: String,
+    pub max_streams_per_connection: usize,
+    pub reconnect_base_delay_ms: u64,
+    pub reconnect_max_delay_ms: u64,
+    pub candle_buffer_size: usize,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -246,13 +328,54 @@ pub struct SymbolConfig {
     pub asset_class: AssetClass,
     pub exchange: String,
     pub timeframes: Vec<String>,
+    /// Override the data source for this symbol: "binance" | "tradingview" | "yahoo".
+    /// When absent, derived from `exchange` (binance → "binance", else global primary).
+    #[serde(default)]
+    pub data_source: Option<String>,
+}
+
+/// Per-proxy-symbol config: separate TV and Yahoo identifiers + preferred source.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ProxySymbolEntry {
+    /// TradingView symbol (e.g. "OANDA:XAUUSD"). Used when source = "tradingview".
+    #[serde(default)]
+    pub tradingview: Option<String>,
+    /// Yahoo Finance symbol (e.g. "GC=F"). Always present as canonical fallback.
+    pub yahoo: String,
+    /// Preferred data source: "tradingview" | "yahoo". Defaults to "yahoo".
+    #[serde(default = "default_proxy_source")]
+    pub source: String,
+}
+
+fn default_proxy_source() -> String {
+    "yahoo".to_owned()
+}
+
+impl ProxySymbolEntry {
+    /// Returns the symbol string for the preferred source.
+    /// Falls back to `yahoo` if the preferred source has no symbol configured.
+    pub fn symbol(&self) -> &str {
+        match self.source.as_str() {
+            "tradingview" => self.tradingview.as_deref().unwrap_or(&self.yahoo),
+            _ => &self.yahoo,
+        }
+    }
+
+    /// Convenience constructor for tests: creates a Yahoo-only entry.
+    pub fn from_yahoo(symbol: impl Into<String>) -> Self {
+        Self {
+            tradingview: None,
+            yahoo: symbol.into(),
+            source: default_proxy_source(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ProxySymbols {
-    pub xauusd: String,
-    pub ihsg: String,
-    pub dxy: String,
+    pub xauusd: ProxySymbolEntry,
+    pub ihsg: ProxySymbolEntry,
+    pub dxy: ProxySymbolEntry,
 }
 
 #[cfg(test)]
