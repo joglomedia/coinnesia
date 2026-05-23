@@ -105,22 +105,22 @@ health_stale_after_secs = 180
 
 [data_sources]
 primary = "binance"
-fallback = "yahoo"
+fallback = "tradingview"
 candle_limit = 250
 scanning_mode = "polling"
 
 [data_sources.retry]
-max_retries = 3
+max_retries = 1
 base_delay_ms = 500
 max_delay_ms = 10000
 
 [data_sources.yahoo]
-enabled = true
+enabled = false
 base_url = "https://query1.finance.yahoo.com"
 adjust = true
 
 [data_sources.tradingview]
-enabled = false
+enabled = true
 auth_token_env = "TRADINGVIEW_AUTH_TOKEN"
 session_id_env = "TRADINGVIEW_SESSION_ID"
 session_signature_env = "TRADINGVIEW_SESSIONID_SIGN"
@@ -143,7 +143,7 @@ rest_url = "https://api.binance.com"
 websocket_url = "wss://stream.binance.com:9443"
 
 [exchange.binance.ws]
-enabled = false
+enabled = true
 url = "wss://stream.binance.com/stream"
 max_streams_per_connection = 200
 reconnect_base_delay_ms = 1000
@@ -233,12 +233,19 @@ exchange = "binance"
 data_source = "binance"
 timeframes = ["1h", "4h", "1d"]
 
+[[symbols]]
+symbol = "IHSG"
+asset_class = "stocks_idx"
+exchange = ""
+data_source = "tradingview"
+timeframes = ["1h", "4h", "1d"]
+
 [proxy_symbols.xauusd]
 tradingview = "OANDA:XAUUSD"
 yahoo = "GC=F"
 source = "tradingview"
 
-[proxy_symbols.ihsg]
+[proxy_symbols.IHSG]
 tradingview = "IDX:COMPOSITE"
 yahoo = "^JKSE"
 source = "tradingview"

@@ -96,6 +96,26 @@ async fn main() -> Result<()> {
                 signals = report.signals.len(),
                 "scan cycle completed"
             );
+            for signal in &report.signals {
+                let ep = signal.entry_plan.as_ref().map(|ep| {
+                    format!(
+                        "ew1={:.2}~{:.2} tp1={:.2} tp2={:.2} tp3={:.2} sl={:.2}",
+                        ep.ew1.low, ep.ew1.high,
+                        ep.take_profits.tp1, ep.take_profits.tp2, ep.take_profits.tp3_optional,
+                        ep.stop_loss.price
+                    )
+                });
+                info!(
+                    symbol = %signal.symbol,
+                    state = ?signal.state,
+                    long  = signal.confidence.long,
+                    short = signal.confidence.short,
+                    gap   = signal.confidence.directional_gap,
+                    reason = %signal.reason,
+                    entry_plan = ep.as_deref().unwrap_or("—"),
+                    "signal"
+                );
+            }
         }
         Command::Scan => {
             let db = Db::connect_optional(&config.database).await?;

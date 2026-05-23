@@ -2,20 +2,24 @@ use std::{sync::Arc, time::Duration};
 
 use anyhow::{Context, Result};
 use async_trait::async_trait;
+use binance_sdk::{
+    config::ConfigurationRestApi,
+    spot::{
+        rest_api::{KlinesIntervalEnum, KlinesItemInner, KlinesParams},
+        SpotRestApi,
+    },
+};
 use chrono::{TimeZone, Utc};
-use reqwest::Url;
-use serde_json::Value;
 
 use crate::{
     config::{BinanceConfig, RetryConfig},
-    data::{binance_interval, retry, MarketDataSource},
+    data::{retry, MarketDataSource},
     Candle, Timeframe,
 };
 
 #[derive(Clone)]
 pub struct BinanceDataSource {
-    client: reqwest::Client,
-    config: BinanceConfig,
+    api: binance_sdk::spot::rest_api::RestApi,
     rate_limiter: Arc<retry::RateLimiter>,
     retry: RetryConfig,
 }
@@ -23,114 +27,45 @@ pub struct BinanceDataSource {
 impl std::fmt::Debug for BinanceDataSource {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("BinanceDataSource")
-            .field("rest_url", &self.config.rest_url)
-            .field("testnet", &self.config.testnet)
             .finish_non_exhaustive()
     }
 }
 
 impl BinanceDataSource {
     pub fn new(config: BinanceConfig, rate_limit_per_second: u32, retry_config: RetryConfig) -> Self {
-        let rate_limit = rate_limit_per_second.max(1);
+        let api = SpotRestApi::from_config(build_sdk_config(&config));
         Self {
-            client: reqwest::Client::new(),
+            api,
             rate_limiter: Arc::new(retry::RateLimiter::new(
-                rate_limit,
+                rate_limit_per_second.max(1),
                 Duration::from_secs(1),
             )),
-            config,
             retry: retry_config,
         }
     }
-
-    pub fn credentials(&self) -> BinanceCredentials {
-        BinanceCredentials {
-            api_key: non_empty(self.config.api_key.clone())
-                .or_else(|| std::env::var(&self.config.api_key_env).ok()),
-            api_secret: non_empty(self.config.api_secret.clone())
-                .or_else(|| std::env::var(&self.config.api_secret_env).ok()),
-        }
-    }
-
-    fn klines_url(&self, symbol: &str, timeframe: Timeframe, limit: usize) -> Result<Url> {
-        let mut url = Url::parse(&self.config.rest_url)
-            .context("invalid Binance REST URL")?
-            .join("/api/v3/klines")
-            .context("invalid Binance klines endpoint")?;
-        url.query_pairs_mut()
-            .append_pair("symbol", symbol)
-            .append_pair("interval", binance_interval(timeframe))
-            .append_pair("limit", &limit.min(1000).to_string());
-        Ok(url)
-    }
-}
-
-impl Default for BinanceDataSource {
-    fn default() -> Self {
-        Self::new(
-            BinanceConfig {
-                api_key: None,
-                api_secret: None,
-                api_key_env: "BINANCE_API_KEY".to_owned(),
-                api_secret_env: "BINANCE_API_SECRET".to_owned(),
-                account_type: "spot".to_owned(),
-                recv_window: 5,
-                testnet: false,
-                market_data_mode: "http".to_owned(),
-                http_poll_interval: 1,
-                rest_url: "https://api.binance.com".to_owned(),
-                websocket_url: "wss://stream.binance.com:9443".to_owned(),
-                ws: crate::config::BinanceWsConfig {
-                    enabled: false,
-                    url: "wss://stream.binance.com/stream".to_owned(),
-                    max_streams_per_connection: 200,
-                    reconnect_base_delay_ms: 1000,
-                    reconnect_max_delay_ms: 30000,
-                    candle_buffer_size: 500,
-                },
-            },
-            10,
-            RetryConfig {
-                max_retries: 3,
-                base_delay_ms: 500,
-                max_delay_ms: 10000,
-            },
-        )
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct BinanceCredentials {
-    pub api_key: Option<String>,
-    pub api_secret: Option<String>,
 }
 
 #[async_trait]
 impl MarketDataSource for BinanceDataSource {
-    async fn candles(
-        &self,
-        symbol: &str,
-        timeframe: Timeframe,
-        limit: usize,
-    ) -> Result<Vec<Candle>> {
+    async fn candles(&self, symbol: &str, timeframe: Timeframe, limit: usize) -> Result<Vec<Candle>> {
         self.rate_limiter.acquire().await;
 
-        let url = self.klines_url(symbol, timeframe, limit)?;
-        let client = self.client.clone();
-        let rows = retry::with_retry(&self.retry, || {
-            let client = client.clone();
-            let url = url.clone();
+        let params = KlinesParams::builder(symbol.to_uppercase(), timeframe_to_sdk_interval(timeframe)?)
+            .limit(limit.min(1000) as i32)
+            .build()
+            .context("build Binance klines params")?;
+
+        let api = self.api.clone();
+        let rows: Vec<Vec<KlinesItemInner>> = retry::with_retry(&self.retry, || {
+            let api    = api.clone();
+            let params = params.clone();
             async move {
-                client
-                    .get(url)
-                    .send()
+                api.klines(params)
                     .await
-                    .context("failed to request Binance klines")?
-                    .error_for_status()
-                    .context("Binance klines request returned error status")?
-                    .json::<Vec<Vec<Value>>>()
+                    .context("Binance klines SDK request")?
+                    .data()
                     .await
-                    .context("failed to decode Binance klines")
+                    .context("Binance klines deserialization")
             }
         })
         .await?;
@@ -139,35 +74,83 @@ impl MarketDataSource for BinanceDataSource {
     }
 }
 
-fn parse_kline(row: Vec<Value>) -> Result<Candle> {
-    let ts = row
-        .first()
-        .and_then(Value::as_i64)
-        .context("missing Binance kline open time")?;
+// ─── SDK helpers ─────────────────────────────────────────────────────────────
+
+fn build_sdk_config(cfg: &BinanceConfig) -> ConfigurationRestApi {
+    ConfigurationRestApi::builder()
+        .base_path(cfg.rest_url.clone())
+        // Set to 1 (not 0) to avoid SDK underflow: it evaluates `retries - attempt`
+        // before the retry-guard check. With retries=1 and attempt=1, the result is 0
+        // which makes should_retry_request return false — effectively no SDK retry.
+        // Actual retry logic is handled by our retry::with_retry wrapper.
+        .retries(1u32)
+        // SDK default is 1000ms — way too short for SEA → Binance latency (~200-400ms).
+        // Match the server.request_timeout_secs default from AppConfig (10s).
+        .timeout(10_000u64)
+        .build()
+        .expect("BinanceConfig always produces a valid SDK configuration")
+}
+
+fn timeframe_to_sdk_interval(tf: Timeframe) -> Result<KlinesIntervalEnum> {
+    Ok(match tf {
+        Timeframe::M1  => KlinesIntervalEnum::Interval1m,
+        Timeframe::M5  => KlinesIntervalEnum::Interval5m,
+        Timeframe::M15 => KlinesIntervalEnum::Interval15m,
+        Timeframe::H1  => KlinesIntervalEnum::Interval1h,
+        Timeframe::H4  => KlinesIntervalEnum::Interval4h,
+        Timeframe::D1  => KlinesIntervalEnum::Interval1d,
+        Timeframe::W1  => KlinesIntervalEnum::Interval1w,
+        Timeframe::Mn1 => KlinesIntervalEnum::Interval1M,
+    })
+}
+
+fn parse_kline(row: Vec<KlinesItemInner>) -> Result<Candle> {
+    let ts_ms = match row.first().context("empty kline row")? {
+        KlinesItemInner::Integer(ms) => *ms,
+        other => anyhow::bail!("unexpected kline open_time type: {other:?}"),
+    };
     Ok(Candle {
         ts: Utc
-            .timestamp_millis_opt(ts)
+            .timestamp_millis_opt(ts_ms)
             .single()
             .context("invalid Binance kline timestamp")?,
-        open: parse_decimal_string(&row, 1, "open")?,
-        high: parse_decimal_string(&row, 2, "high")?,
-        low: parse_decimal_string(&row, 3, "low")?,
-        close: parse_decimal_string(&row, 4, "close")?,
-        volume: parse_decimal_string(&row, 5, "volume")?,
+        open:   parse_price(&row, 1, "open")?,
+        high:   parse_price(&row, 2, "high")?,
+        low:    parse_price(&row, 3, "low")?,
+        close:  parse_price(&row, 4, "close")?,
+        volume: parse_price(&row, 5, "volume")?,
     })
 }
 
-fn parse_decimal_string(row: &[Value], index: usize, field: &str) -> Result<f64> {
-    row.get(index)
-        .and_then(Value::as_str)
-        .with_context(|| format!("missing Binance kline {field}"))?
-        .parse::<f64>()
-        .with_context(|| format!("invalid Binance kline {field}"))
+fn parse_price(row: &[KlinesItemInner], idx: usize, field: &str) -> Result<f64> {
+    match row.get(idx).with_context(|| format!("missing kline field '{field}'"))? {
+        KlinesItemInner::String(s) => {
+            s.parse::<f64>().with_context(|| format!("invalid kline '{field}': {s}"))
+        }
+        other => anyhow::bail!("unexpected type for kline '{field}': {other:?}"),
+    }
 }
 
-fn non_empty(value: Option<String>) -> Option<String> {
-    value.and_then(|value| {
-        let value = value.trim().to_owned();
-        (!value.is_empty()).then_some(value)
-    })
+// ─── Tests ────────────────────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parse_kline_sdk_parity() {
+        let raw = serde_json::json!([
+            1682899200000i64,
+            "29000.00", "29500.00", "28800.00", "29300.00", "1234.567",
+            1682902799999i64, "36000000.00", 1000, "600.000", "17000000.00", "0"
+        ]);
+        let row: Vec<KlinesItemInner> = serde_json::from_value(raw).unwrap();
+        let candle = parse_kline(row).unwrap();
+        assert_eq!(candle.open,  29000.0);
+        assert_eq!(candle.high,  29500.0);
+        assert_eq!(candle.low,   28800.0);
+        assert_eq!(candle.close, 29300.0);
+        approx::assert_relative_eq!(candle.volume, 1234.567, epsilon = 1e-6);
+        assert_eq!(candle.ts.timestamp_millis(), 1682899200000);
+    }
 }

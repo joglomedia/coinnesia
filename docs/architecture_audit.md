@@ -239,6 +239,123 @@ enabled = true
 4. Complete backtester and optimizer on the shared engine.
 5. Add benchmark and load harnesses for scan throughput.
 
+---
+
+## Scan Pipeline — Detailed Architecture
+
+This section documents the end-to-end data flow of one scan cycle, as verified against the
+running implementation (`scan-once` command output, 2026-05-23).
+
+### Call graph
+
+```
+main.rs: Command::ScanOnce
+└── Scanner::scan_once()                              scanner/mod.rs:73
+    ├── Scanner::ingest()                             scanner/mod.rs:89
+    │   ├── proxy::fetch_once_per_cycle()             data/proxy.rs:20
+    │   │   └── PerSymbolMarketData::batch_candles()  data/mod.rs:205
+    │   │       ├── TradingViewDataSource::batch_candles()  data/tradingview.rs:131
+    │   │       │   └── tvdata-rs::download_history_map()  (WebSocket to TV)
+    │   │       └── .unwrap_or_default()              (proxy failure = non-fatal)
+    │   └── PerSymbolMarketData::batch_candles()      data/mod.rs:205
+    │       └── BinanceDataSource::candles()  ×N      data/binance.rs (via binance-sdk REST)
+    ├── Scanner::analyze()                            scanner/mod.rs:133
+    │   └── [per symbol, tokio::spawn, bounded semaphore]
+    │       └── StrategyEngine::evaluate()            strategy/mod.rs:23
+    │           └── SignalGenerator::evaluate()       strategy/signals.rs:66
+    │               ├── IndicatorSnapshot::new()      (all 14 indicators)
+    │               ├── Layer 1: classify_regime()    indicators/regime.rs
+    │               ├── Layer 2: session_allows_asset()  strategy/session.rs
+    │               ├── Layer 3–4: evaluate_direction() ×2  strategy/signals.rs
+    │               │   └── ConfidenceScore::from_sides()   strategy/confidence.rs
+    │               ├── Layer 5: evaluate_trap_guard()  strategy/trap_guard.rs
+    │               ├── Layer 6: directional_gap check
+    │               └── EntryPlanCalculator::calculate()  strategy/entry_plan.rs
+    └── ScanPublisher::publish()                      scanner/mod.rs:305
+        ├── cache_snapshots() → Valkey               (ScanSnapshot, SignalSnapshot)
+        ├── signal_record() → Postgres signal_evaluations
+        ├── alert_job() → Postgres alert_jobs
+        └── cache.publish_json("signals", …) → Valkey pub/sub
+```
+
+### Signal state machine
+
+```
+candles < min_length         → Wait  (not_enough_candles)
+candles empty                → Wait  (market_data_unavailable)
+regime = Shock               → Freeze (shock_regime)
+regime ∈ {Sideways, Chop}   → Wait  (regime_block:*)
+session blocks asset class   → Wait  (session_block:*)
+both sides trap-blocked      → Wait  (trap_guard_blocked)
+confidence < threshold       → Wait  (layers_not_met)
+gap < min_directional_gap    → Wait  (layers_not_met)
+long wins and all pass       → Long  (six_layer_pass) + EntryPlan
+short wins and all pass      → Short (six_layer_pass) + EntryPlan
+```
+
+### Observed output (2026-05-23, BTCUSDT M15 / ETHUSDT M15 / PAXGUSDT H1)
+
+```
+BTCUSDT  Wait  long=0.0  short=55.0  gap=55.0
+         layers_not_met threshold=72.0 (short needs +17 to trigger)
+
+ETHUSDT  Wait  long=0.0  short=0.0   gap=0.0
+         regime_block:Sideways (stopped at Layer 1)
+
+PAXGUSDT Wait  long=0.0  short=0.0   gap=0.0
+         regime_block:Sideways (stopped at Layer 1)
+```
+
+`signals=3` in the log summary always equals `scanned` — it is the count of evaluations, not
+actionable trade opportunities.
+
+---
+
+## Data Source Operational Status
+
+### Binance REST (klines) — Functional
+
+- Public endpoint, no API key required.
+- Implemented via `binance-sdk v50` (Phase 1.5, 2026-05-22).
+- Client: `BinanceDataSource` wraps `SpotRestApi::from_config()` with:
+  - In-process `RateLimiter` (sliding window, default 10 req/s)
+  - `retry::with_retry` with exponential backoff (SDK retries disabled via `retries=1`)
+  - 10-second timeout (SDK default 1s was too short for SEA → AWS latency)
+- SDK `KlinesItemInner` enum replaces fragile `serde_json::Value` positional indexing.
+
+### Binance WebSocket — Functional (disabled by default)
+
+- `BinanceWsStream` in `src/data/binance_ws.rs`.
+- Uses `binance-sdk::spot::websocket_streams::KlineResponse` for typed message deserialization.
+- Reconnect loop, ring buffer, and broadcast channel remain bespoke (application-level logic).
+- Enable via `[exchange.binance.ws] enabled = true` + `scanning_mode = "streaming"`.
+
+### TradingView (tvdata-rs) — Functional with session auth
+
+- Required for proxy symbols (XAUUSD, IHSG, DXY) when `source = "tradingview"`.
+- Authentication via `sessionid` cookie sent in WebSocket `Cookie` header.
+- `TRADINGVIEW_SESSION_ID` (required) + `TRADINGVIEW_SESSIONID_SIGN` (recommended).
+- `TRADINGVIEW_AUTH_TOKEN` is the JWT for the `set_auth_token` WebSocket message.
+  When session is set, the library defaults to `"unauthorized_user_token"` — the auth token
+  env is **optional** and should be omitted unless a proper user-session JWT is available.
+  (A chart-share JWT with `iss: "tv_chart"` is not a valid user auth token.)
+- Session cookies expire in 2–4 weeks. Renew via browser DevTools on `tradingview.com`.
+
+### Yahoo Finance — Blocked (as of 2025)
+
+- All `/v8/finance/chart/*` endpoints return **HTTP 429** from Cloudflare Bot Protection.
+- Both cookie-based and plain requests are blocked — the crumb endpoint itself returns 429.
+- `YahooDataSource` is present in `src/data/yahoo.rs` but non-functional for proxy symbols.
+- Recommended workaround: use TradingView for proxy symbols.
+- Future fix path: implement crumb+cookie session flow in `YahooDataSource`, or replace with
+  Alpha Vantage/Twelve Data adapter (both offer free API keys).
+
+---
+
 ## Conclusion
 
-The current architecture has cleared the Phase 0 runtime foundation and Phase 1 core scanner requirements. It is ready to move into Phase 2 trading/exchange execution work, with the main residual risks concentrated in live order safety, portfolio/risk reconciliation, richer operational APIs, and benchmarked scanner throughput.
+The current architecture has cleared the Phase 0 runtime foundation and Phase 1 core scanner
+requirements. It is ready to move into Phase 2 trading/exchange execution work, with the main
+residual risks concentrated in live order safety, portfolio/risk reconciliation, richer operational
+APIs, and benchmarked scanner throughput.
+

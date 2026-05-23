@@ -264,3 +264,67 @@ fn percent_decode(value: &str) -> String {
     }
     String::from_utf8_lossy(&output).into_owned()
 }
+
+// ── Baseline & parity tests (require live Binance — run with: cargo test -- --ignored --nocapture) ──
+
+/// Dokumentasi output bespoke sebelum migrasi. Jalankan sekali di Step 0, simpan output
+/// sebagai referensi manual untuk dibandingkan dengan rest_sdk_parity di Step 3.
+#[tokio::test]
+#[ignore]
+async fn baseline_candle_structure() {
+    use coinnesia::{
+        config::AppConfig,
+        data::{binance::BinanceDataSource, MarketDataSource},
+        Timeframe,
+    };
+
+    let config = AppConfig::from_default_toml().unwrap();
+    let source = BinanceDataSource::new(
+        config.exchange.binance.clone(),
+        config.exchange.rate_limit_per_second as u32,
+        config.data_sources.retry.clone(),
+    );
+    let candles = source.candles("BTCUSDT", Timeframe::D1, 5).await.unwrap();
+
+    assert_eq!(candles.len(), 5, "harus ada 5 candles");
+    for c in &candles {
+        assert!(c.open > 0.0, "open > 0");
+        assert!(c.high >= c.low, "high >= low");
+        assert!(c.volume > 0.0, "volume > 0");
+    }
+    let ascending = candles.windows(2).all(|w| w[0].ts < w[1].ts);
+    assert!(ascending, "timestamps harus ascending");
+
+    println!("BASELINE BESPOKE OUTPUT:\n{candles:#?}");
+}
+
+/// Parity test setelah REST SDK migration (Step 3). Bandingkan output secara manual
+/// dengan baseline_candle_structure di atas — OHLCV D1 candles tertutup harus identik.
+#[tokio::test]
+#[ignore]
+async fn rest_sdk_parity() {
+    use coinnesia::{
+        config::AppConfig,
+        data::{binance::BinanceDataSource, MarketDataSource},
+        Timeframe,
+    };
+
+    let config = AppConfig::from_default_toml().unwrap();
+    let source = BinanceDataSource::new(
+        config.exchange.binance.clone(),
+        config.exchange.rate_limit_per_second as u32,
+        config.data_sources.retry.clone(),
+    );
+    let candles = source.candles("BTCUSDT", Timeframe::D1, 5).await.unwrap();
+
+    assert_eq!(candles.len(), 5, "harus ada 5 candles");
+    for c in &candles {
+        assert!(c.open > 0.0, "open > 0");
+        assert!(c.high >= c.low, "high >= low");
+        assert!(c.volume > 0.0, "volume > 0");
+    }
+    let ascending = candles.windows(2).all(|w| w[0].ts < w[1].ts);
+    assert!(ascending, "timestamps harus ascending");
+
+    println!("SDK REST PARITY OUTPUT:\n{candles:#?}");
+}

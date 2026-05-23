@@ -2,6 +2,7 @@ use std::{collections::VecDeque, time::Duration};
 
 use anyhow::{Context, Result};
 use async_trait::async_trait;
+use binance_sdk::spot::websocket_streams::KlineResponse;
 use chrono::{TimeZone, Utc};
 use futures::StreamExt;
 use serde::Deserialize;
@@ -14,10 +15,17 @@ use crate::{
     config::BinanceWsConfig,
     data::{
         binance_interval,
+        parse_timeframe,
         stream::{buffer_key, new_buffers, CandleBuffers, CandleEvent, CandleStream},
     },
     Candle, Timeframe,
 };
+
+/// Combined-stream envelope: `{"stream":"btcusdt@kline_1h","data":{...kline event...}}`
+#[derive(Deserialize)]
+struct CombinedStreamEnvelope {
+    data: KlineResponse,
+}
 
 const BROADCAST_CAPACITY: usize = 1024;
 
@@ -109,23 +117,27 @@ async fn handle_message(
     buffers: &CandleBuffers,
     buffer_size: usize,
 ) -> Result<()> {
-    let envelope: StreamEnvelope = serde_json::from_str(text).context("parse stream envelope")?;
-    let kline = envelope.data.k;
+    let envelope: CombinedStreamEnvelope =
+        serde_json::from_str(text).context("parse combined-stream envelope")?;
+    let k = envelope.data.k.as_ref().context("missing kline payload in WS message")?;
 
-    let timeframe = parse_interval(&envelope.data.event_type, &kline.interval);
+    let interval_str = k.i.as_deref().context("missing kline interval")?;
+    let timeframe = parse_timeframe(interval_str)
+        .with_context(|| format!("unknown WS kline interval '{interval_str}'"))?;
+
     let candle = Candle {
         ts: Utc
-            .timestamp_millis_opt(kline.open_time)
+            .timestamp_millis_opt(k.t.context("missing kline open_time")?)
             .single()
             .context("invalid kline timestamp")?,
-        open: kline.open.parse().context("parse open")?,
-        high: kline.high.parse().context("parse high")?,
-        low: kline.low.parse().context("parse low")?,
-        close: kline.close.parse().context("parse close")?,
-        volume: kline.volume.parse().context("parse volume")?,
+        open:   k.o.as_deref().context("missing open")?.parse().context("parse open")?,
+        high:   k.h.as_deref().context("missing high")?.parse().context("parse high")?,
+        low:    k.l.as_deref().context("missing low")?.parse().context("parse low")?,
+        close:  k.c.as_deref().context("missing close")?.parse().context("parse close")?,
+        volume: k.v.as_deref().context("missing volume")?.parse().context("parse volume")?,
     };
-    let symbol = kline.symbol.clone();
-    let is_closed = kline.is_closed;
+    let symbol    = k.s.clone().context("missing symbol")?;
+    let is_closed = k.x.unwrap_or(false);
 
     // Update ring buffer
     {
@@ -138,19 +150,14 @@ async fn handle_message(
                 buf.pop_front();
             }
         } else if let Some(last) = buf.back_mut() {
-            // Update in-progress candle (same open_time) or append
+            // Update in-progress candle (same open_time)
             if last.ts == candle.ts {
                 *last = candle.clone();
             }
         }
     }
 
-    let _ = tx.send(CandleEvent {
-        symbol,
-        timeframe,
-        candle,
-        is_closed,
-    });
+    let _ = tx.send(CandleEvent { symbol, timeframe, candle, is_closed });
 
     Ok(())
 }
@@ -243,54 +250,43 @@ impl CandleStream for BinanceWsStream {
     }
 }
 
-/// Minimum interval mapping for Binance kline interval strings.
-fn parse_interval(_event_type: &str, interval: &str) -> Timeframe {
-    match interval {
-        "1m" => Timeframe::M1,
-        "5m" => Timeframe::M5,
-        "15m" => Timeframe::M15,
-        "1h" => Timeframe::H1,
-        "4h" => Timeframe::H4,
-        "1d" => Timeframe::D1,
-        "1w" => Timeframe::W1,
-        "1M" => Timeframe::Mn1,
-        _ => Timeframe::M15,
+// ─── Tests ───────────────────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parse_ws_kline_sdk_parity() {
+        let json = r#"{
+            "stream": "btcusdt@kline_1h",
+            "data": {
+                "e": "kline", "E": 1682900000000, "s": "BTCUSDT",
+                "k": {
+                    "t": 1682899200000, "T": 1682902799999, "s": "BTCUSDT", "i": "1h",
+                    "f": 1, "L": 100,
+                    "o": "29000.00", "c": "29300.00", "h": "29500.00", "l": "28800.00",
+                    "v": "1234.567", "n": 100, "x": true,
+                    "q": "36000000.00", "V": "600.000", "Q": "17000000.00", "B": "0"
+                }
+            }
+        }"#;
+        let envelope: CombinedStreamEnvelope = serde_json::from_str(json).unwrap();
+        let k = envelope.data.k.as_ref().unwrap();
+
+        assert_eq!(k.o.as_deref().unwrap(), "29000.00");
+        assert_eq!(k.h.as_deref().unwrap(), "29500.00");
+        assert_eq!(k.l.as_deref().unwrap(), "28800.00");
+        assert_eq!(k.c.as_deref().unwrap(), "29300.00");
+        approx::assert_relative_eq!(
+            k.v.as_deref().unwrap().parse::<f64>().unwrap(),
+            1234.567,
+            epsilon = 1e-6
+        );
+        assert!(k.x.unwrap());
+        assert_eq!(k.t.unwrap(), 1682899200000);
+
+        let tf = parse_timeframe(k.i.as_deref().unwrap()).unwrap();
+        assert_eq!(tf, crate::Timeframe::H1);
     }
-}
-
-// ─── Binance combined-stream message structures ────────────────────────────
-
-#[derive(Debug, Deserialize)]
-struct StreamEnvelope {
-    data: KlineData,
-}
-
-#[derive(Debug, Deserialize)]
-struct KlineData {
-    #[serde(rename = "e")]
-    event_type: String,
-    #[serde(rename = "k")]
-    k: KlinePayload,
-}
-
-#[derive(Debug, Deserialize)]
-struct KlinePayload {
-    #[serde(rename = "t")]
-    open_time: i64,
-    #[serde(rename = "s")]
-    symbol: String,
-    #[serde(rename = "i")]
-    interval: String,
-    #[serde(rename = "o")]
-    open: String,
-    #[serde(rename = "h")]
-    high: String,
-    #[serde(rename = "l")]
-    low: String,
-    #[serde(rename = "c")]
-    close: String,
-    #[serde(rename = "v")]
-    volume: String,
-    #[serde(rename = "x")]
-    is_closed: bool,
 }

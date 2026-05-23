@@ -2,7 +2,7 @@
 name = "coinnesia"
 version = "0.1.0"
 edition = "2021"
-rust-version = "1.80"
+rust-version = "1.86"
 description = "Async multi-asset trading signal scanner with config-driven strategy profiles."
 license = "MIT"
 
@@ -10,6 +10,7 @@ license = "MIT"
 anyhow = "1"
 async-trait = "0.1"
 axum = "0.8"
+binance-sdk = { version = "50", default-features = false, features = ["spot", "rustls-tls"] }
 chrono = { version = "0.4", features = ["serde"] }
 chrono-tz = "0.10"
 clap = { version = "4", features = ["derive", "env"] }
