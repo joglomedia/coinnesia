@@ -175,6 +175,8 @@ source      = "twelvedata"   # or "tradingview"
 - Free tier: 800 API credits/day. Set `scan_interval_secs = 300` for free tier with 3 proxy symbols.
 - Implementation: `src/data/twelvedata.rs` (`TwelveDataDataSource`).
 - Data source priority per asset: Binance (crypto) → TradingView via `tvdata-rs` (all/intraday) → Twelve Data (proxy symbols, static API key).
+- Transport: REST `/time_series` only. Twelve Data's WebSocket (`wss://ws.twelvedata.com/v1/quotes/price`) is a forward-only live tick-price stream and **cannot** deliver historical OHLCV bars; do not wire `TwelveDataDataSource::candles` to a WebSocket transport. (Full WS access also requires the Pro plan; REST `/time_series` works on the free tier.)
+- Batch fetch: `TwelveDataDataSource::batch_candles` overrides the default sequential trait impl and fans out one REST request per `CandleRequest` concurrently via `futures::future::try_join_all`, sharing the same `reqwest::Client` and the `retry::with_retry` wrapper. Bypassing this adapter to call `/time_series` from elsewhere will skip retry/backoff and serialize what should be a single concurrent round-trip — always go through `MarketDataSource::batch_candles`.
 
 ### Trap Guard Can Block Signals
 

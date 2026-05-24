@@ -1,12 +1,15 @@
+use std::collections::BTreeMap;
+
 use anyhow::{anyhow, Context, Result};
 use async_trait::async_trait;
 use chrono::{NaiveDate, NaiveDateTime, TimeZone, Utc};
+use futures::future::try_join_all;
 use reqwest::Url;
 use serde::Deserialize;
 
 use crate::{
     config::{RetryConfig, TwelveDataDataSourceConfig},
-    data::{retry, MarketDataSource},
+    data::{retry, CandleRequest, MarketDataSource},
     Candle, Timeframe,
 };
 
@@ -52,15 +55,13 @@ impl TwelveDataDataSource {
             .append_pair("apikey", &api_key);
         Ok(url)
     }
-}
 
-#[async_trait]
-impl MarketDataSource for TwelveDataDataSource {
-    async fn candles(&self, symbol: &str, timeframe: Timeframe, limit: usize) -> Result<Vec<Candle>> {
-        if !self.config.enabled {
-            return Ok(Vec::new());
-        }
-
+    async fn fetch_candles(
+        &self,
+        symbol: &str,
+        timeframe: Timeframe,
+        limit: usize,
+    ) -> Result<Vec<Candle>> {
         let url = self.time_series_url(symbol, timeframe, limit)?;
         let client = self.client.clone();
         let body = retry::with_retry(&self.retry, || {
@@ -94,6 +95,38 @@ impl MarketDataSource for TwelveDataDataSource {
             .into_iter()
             .map(parse_bar)
             .collect()
+    }
+}
+
+#[async_trait]
+impl MarketDataSource for TwelveDataDataSource {
+    async fn candles(&self, symbol: &str, timeframe: Timeframe, limit: usize) -> Result<Vec<Candle>> {
+        if !self.config.enabled {
+            return Ok(Vec::new());
+        }
+        self.fetch_candles(symbol, timeframe, limit).await
+    }
+
+    async fn batch_candles(
+        &self,
+        requests: &[CandleRequest],
+    ) -> Result<BTreeMap<CandleRequest, Vec<Candle>>> {
+        if !self.config.enabled || requests.is_empty() {
+            return Ok(BTreeMap::new());
+        }
+
+        let futures = requests.iter().map(|req| {
+            let req = req.clone();
+            async move {
+                let candles = self
+                    .fetch_candles(&req.symbol, req.timeframe, req.limit)
+                    .await?;
+                Ok::<_, anyhow::Error>((req, candles))
+            }
+        });
+
+        let results = try_join_all(futures).await?;
+        Ok(results.into_iter().collect())
     }
 }
 

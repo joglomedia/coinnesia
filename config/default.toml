@@ -231,7 +231,14 @@ symbol = "PAXGUSDT"
 asset_class = "gold"
 exchange = "binance"
 data_source = "binance"
-timeframes = ["1h", "4h", "1d"]
+timeframes = ["15m", "1h", "4h", "1d"]
+
+[[symbols]]
+symbol = "XAUUSD"
+asset_class = "gold"
+exchange = "binance"
+data_source = "tradingview"
+timeframes = ["15m", "1h", "4h", "1d"]
 
 [[symbols]]
 symbol = "IHSG"

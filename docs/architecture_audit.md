@@ -233,6 +233,8 @@ enabled = true
 
 Within the TradingView adapter, `TradingViewDataSource::batch_candles` (`src/data/tradingview.rs`) further parallelizes by `(timeframe, limit)` group using `futures::future::try_join_all` over a single shared `Arc<TradingViewClient>`. The underlying `tvdata-rs::download_history_map` opens one chart WebSocket session per call and pipelines all symbols through it with bounded internal concurrency, so a typical multi-timeframe scan (M15/H1/H4/D1) costs ~1 WS round-trip-time instead of 4. Per-symbol lookup against the returned `BTreeMap<Ticker, HistorySeries>` is direct; symbols missing from the response emit a `tracing::debug!` rather than being silently substituted with an empty series.
 
+Within the Twelve Data adapter, `TwelveDataDataSource::batch_candles` (`src/data/twelvedata.rs`) overrides the default sequential trait impl and fans out one REST `/time_series` request per `CandleRequest` concurrently via `futures::future::try_join_all`. Twelve Data's WebSocket (`wss://ws.twelvedata.com/v1/quotes/price`) only streams live tick prices — it cannot serve historical OHLCV bars — so REST `/time_series` remains the only transport for backfill candles, and the optimization is purely about parallelizing those REST round-trips. All requests still flow through the shared `retry::with_retry` wrapper.
+
 ## Priority Order
 
 1. Complete live/paper trading execution around the existing exchange trait.
@@ -353,6 +355,8 @@ actionable trade opportunities.
 - No browser session required — static API key via `TWELVE_DATA_API_KEY` env var.
 - Supports all 8 timeframes (M1 through Mn1).
 - Replaces Yahoo Finance for proxy symbols (XAUUSD, DXY, IHSG).
+- Transport: REST `/time_series` only. Twelve Data's WebSocket (`wss://ws.twelvedata.com/v1/quotes/price`) is a forward-only live tick-price stream; it does not deliver historical OHLCV bars and is not used by this adapter. Full WebSocket access also requires the Pro plan, while REST `/time_series` works on the free tier.
+- Batch fetch: `TwelveDataDataSource::batch_candles` overrides the default trait impl and runs all `CandleRequest`s concurrently via `futures::future::try_join_all`, sharing the same `reqwest::Client`. Each request still flows through `retry::with_retry`. This reduces a multi-symbol/multi-timeframe proxy fetch from N serial round-trips to a single concurrent fan-out.
 
 ### Yahoo Finance — Removed
 

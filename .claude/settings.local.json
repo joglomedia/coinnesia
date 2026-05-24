@@ -20,7 +20,8 @@
       "Bash(curl *)",
       "Bash(grep -v \"^$\")",
       "WebFetch(domain:twelvedata.com)",
-      "Bash(python3 *)"
+      "Bash(python3 *)",
+      "WebFetch(domain:support.twelvedata.com)"
     ]
   }
 }
