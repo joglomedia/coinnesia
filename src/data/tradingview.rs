@@ -7,6 +7,7 @@ use std::{
 use anyhow::{anyhow, Context, Result};
 use async_trait::async_trait;
 use chrono::{TimeZone, Utc};
+use futures::future::try_join_all;
 use tvdata_rs::prelude::{
     AuthConfig, Bar, HistoryRequest, Interval, Ticker, TradingSession, TradingViewClient,
     TradingViewClientConfig,
@@ -155,44 +156,61 @@ impl MarketDataSource for TradingViewDataSource {
                 .push(request.clone());
         }
 
-        for ((timeframe, limit), group) in groups {
-            let symbols = group
-                .iter()
-                .map(|request| Ticker::new(normalize_symbol(&request.symbol)))
-                .collect::<Vec<_>>();
+        let group_futures = groups.into_iter().map(|((timeframe, limit), group)| {
+            let client = client.clone();
             let retry_config = self.retry.clone();
-            let series = retry::with_retry(&retry_config, || {
-                let client = client.clone();
-                let syms = symbols.clone();
-                async move {
-                    client
-                        .download_history_map(syms, tradingview_interval(timeframe), bars(limit))
-                        .await
-                        .with_context(|| {
-                            format!(
-                                "failed to fetch TradingView batch candles for {:?} limit {}",
-                                timeframe, limit
-                            )
-                        })
-                }
-            })
-            .await?;
-
-            for request in group {
-                let tv_symbol = normalize_symbol(&request.symbol);
-                let candles = series
+            async move {
+                let symbols = group
                     .iter()
-                    .find(|(symbol, _)| symbol.as_str() == tv_symbol)
-                    .map(|(_, series)| {
-                        series
+                    .map(|request| Ticker::new(normalize_symbol(&request.symbol)))
+                    .collect::<Vec<_>>();
+                let series = retry::with_retry(&retry_config, || {
+                    let client = client.clone();
+                    let syms = symbols.clone();
+                    async move {
+                        client
+                            .download_history_map(syms, tradingview_interval(timeframe), bars(limit))
+                            .await
+                            .with_context(|| {
+                                format!(
+                                    "failed to fetch TradingView batch candles for {:?} limit {}",
+                                    timeframe, limit
+                                )
+                            })
+                    }
+                })
+                .await?;
+
+                let mut group_output = Vec::with_capacity(group.len());
+                for request in group {
+                    let tv_symbol = normalize_symbol(&request.symbol);
+                    let ticker = Ticker::new(tv_symbol.clone());
+                    let candles = match series.get(&ticker) {
+                        Some(series) => series
                             .bars
                             .iter()
                             .cloned()
                             .map(candle_from_bar)
-                            .collect::<Result<Vec<_>>>()
-                    })
-                    .transpose()?
-                    .unwrap_or_default();
+                            .collect::<Result<Vec<_>>>()?,
+                        None => {
+                            tracing::debug!(
+                                symbol = %tv_symbol,
+                                timeframe = ?timeframe,
+                                limit,
+                                "TradingView websocket returned no series for symbol"
+                            );
+                            Vec::new()
+                        }
+                    };
+                    group_output.push((request, candles));
+                }
+                anyhow::Ok(group_output)
+            }
+        });
+
+        let groups_results = try_join_all(group_futures).await?;
+        for group_output in groups_results {
+            for (request, candles) in group_output {
                 output.insert(request, candles);
             }
         }
