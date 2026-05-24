@@ -142,6 +142,8 @@ Use `tvdata-rs` as the primary unofficial TradingView dependency for new datasou
 
 `tail-fin-tradingview` is allowed only as an optional secondary dependency for live WebSocket streaming, Pine/catalog tooling, or operational data exploration if `tvdata-rs` cannot cover a required feature. `tradingview-rs` is legacy/backup research material and is not the preferred default dependency.
 
+The `TradingViewClient` is constructed once from `TradingViewClientConfig::backend_history()` and cached in `Arc<OnceLock<…>>` so all callers share one chart-WebSocket-backed client. `candles()` uses `client.history()`; `batch_candles()` sub-groups by `(timeframe, limit)` and runs sub-groups concurrently via `futures::future::try_join_all`, calling `client.download_history_map()` per sub-group (one WS session, bounded internal concurrency via the SDK's `request_budget`). Do not bypass this adapter by calling `tvdata-rs` directly — that would open additional WS connections and skip retry/concurrency tiering.
+
 TradingView auth is optional when guest/public access works. Authenticated values must be loaded from config/env vars and never committed:
 
 ```toml

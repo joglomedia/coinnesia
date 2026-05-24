@@ -188,6 +188,7 @@ Goal: Allow each symbol to declare its preferred data source independently, enab
   - Routing table built once at startup from config
   - `candles()`: routes to configured adapter + Twelve Data fallback if empty
   - `batch_candles()`: groups by source, runs Binance/TV/Twelve Data concurrently via `tokio::join!`, then merges
+- `TradingViewDataSource::batch_candles` (`src/data/tradingview.rs`) — adds a second concurrency tier: requests are sub-grouped by `(timeframe, limit)` and all sub-groups run concurrently via `futures::future::try_join_all` over a single shared `Arc<TradingViewClient>` (chart WebSocket transport from `tvdata-rs`, `download_history_map`). Direct `BTreeMap<Ticker, HistorySeries>` lookup replaces the earlier O(n²) linear scan, and symbols missing from the WS response emit `tracing::debug!` instead of silently mapping to an empty vec.
 - `proxy.rs` updated to use `ProxySymbolEntry.symbol()` as request key
 - All scanner, supervisor, and CLI entry points migrated from `ConfiguredMarketData` to `PerSymbolMarketData`
 - `ProxySymbolEntry::from_twelvedata()` helper for tests

@@ -231,6 +231,8 @@ enabled = true
 ### Per-Symbol Data Source Routing (Phase 1.6 — Complete)
 `PerSymbolMarketData` (`src/data/mod.rs`) replaces the global `ConfiguredMarketData` as the default data source adapter for all scanner code. Each symbol is routed to its own adapter based on `SymbolConfig.data_source` (or inferred from `exchange`). Proxy symbols use `ProxySymbolEntry` with separate TradingView and Twelve Data symbol identifiers. `batch_candles` runs source groups concurrently via `tokio::join!`.
 
+Within the TradingView adapter, `TradingViewDataSource::batch_candles` (`src/data/tradingview.rs`) further parallelizes by `(timeframe, limit)` group using `futures::future::try_join_all` over a single shared `Arc<TradingViewClient>`. The underlying `tvdata-rs::download_history_map` opens one chart WebSocket session per call and pipelines all symbols through it with bounded internal concurrency, so a typical multi-timeframe scan (M15/H1/H4/D1) costs ~1 WS round-trip-time instead of 4. Per-symbol lookup against the returned `BTreeMap<Ticker, HistorySeries>` is direct; symbols missing from the response emit a `tracing::debug!` rather than being silently substituted with an empty series.
+
 ## Priority Order
 
 1. Complete live/paper trading execution around the existing exchange trait.
@@ -254,8 +256,9 @@ main.rs: Command::ScanOnce
     ├── Scanner::ingest()                             scanner/mod.rs:89
     │   ├── proxy::fetch_once_per_cycle()             data/proxy.rs:20
     │   │   └── PerSymbolMarketData::batch_candles()  data/mod.rs:205
-    │   │       ├── TradingViewDataSource::batch_candles()  data/tradingview.rs:131
-    │   │       │   └── tvdata-rs::download_history_map()  (WebSocket to TV)
+    │   │       ├── TradingViewDataSource::batch_candles()  data/tradingview.rs:132
+    │   │       │   └── try_join_all over (timeframe, limit) groups
+    │   │       │       └── tvdata-rs::download_history_map()  (chart WebSocket, shared client)
     │   │       └── .unwrap_or_default()              (proxy failure = non-fatal)
     │   └── PerSymbolMarketData::batch_candles()      data/mod.rs:205
     │       └── BinanceDataSource::candles()  ×N      data/binance.rs (via binance-sdk REST)
@@ -340,6 +343,8 @@ actionable trade opportunities.
   env is **optional** and should be omitted unless a proper user-session JWT is available.
   (A chart-share JWT with `iss: "tv_chart"` is not a valid user auth token.)
 - Session cookies expire in 2–4 weeks. Renew via browser DevTools on `tradingview.com`.
+- Transport: `tvdata-rs::TradingViewClient` constructed once from `TradingViewClientConfig::backend_history()` and cached in `Arc<OnceLock<…>>`. `client.history()` and `client.download_history_map()` both run over TradingView's chart WebSocket (`TradingViewWebSocket = WebSocketStream<MaybeTlsStream<TcpStream>>`); REST is not used for OHLCV.
+- Batch fetch: `batch_candles` groups requests by `(timeframe, limit)` and drives all groups concurrently with `futures::future::try_join_all`. Within each group, `download_history_map` parallelizes symbols using the SDK's bounded `request_budget`. Per-symbol lookup uses direct `BTreeMap` access; symbols missing from the response are logged at `debug` level and resolved to an empty candle vec.
 
 ### Twelve Data — Functional (free API key required)
 
