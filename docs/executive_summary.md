@@ -4,7 +4,7 @@
 
   Coinnesia adalah async multi-asset trading signal scanner berbasis Rust yang dirancang sebagai layanan 24/7. Tujuan intinya: memindai ratusan simbol lintas kelas aset
   (BTC, altcoin, gold proxy, forex, saham IDX/US), menghasilkan sinyal Long/Short/Wait/Freeze yang sudah melalui filter konteks pasar, lalu mengirim peringatan ke
-  Telegram serta menyimpan jejaknya ke Postgres + Valkey untuk audit dan reproduksibilitas. Crate coinnesia v0.1.0 (edition 2021, MSRV 1.80) dideskripsikan di
+  Telegram serta menyimpan jejaknya ke Postgres + Valkey untuk audit dan reproduksibilitas. Crate coinnesia v0.1.0 (edition 2021, MSRV 1.86) dideskripsikan di
   Cargo.toml:6 sebagai "Async multi-asset trading signal scanner with config-driven strategy profiles".
 
   Filosofi yang dikodifikasikan di AGENTS.md adalah config-driven, indicator-deterministic, asset-aware: setiap kelas aset memiliki profil bobot indikator sendiri (BTC
@@ -30,8 +30,8 @@
   ├────────────────────────────────────────────────────────────┼─────────────────────────────────────────────────────────────────────────────────────────────────────┤
   │ Profil Aset (src/assets/*)                                 │ btc, altcoin, gold, forex, stocks_idx — masing-masing menyetel bobot indikator                      │
   ├────────────────────────────────────────────────────────────┼─────────────────────────────────────────────────────────────────────────────────────────────────────┤
-  │ Data Sources (src/data/*)                                  │ Binance REST + WebSocket (tokio-tungstenite, opsional), TradingView via tvdata-rs 0.1.2, Yahoo      │
-  │                                                            │ fallback, proxy simbol (XAUUSD/IHSG/DXY)                                                            │
+  │ Data Sources (src/data/*)                                  │ Binance REST + WebSocket (tokio-tungstenite, opsional), TradingView via tvdata-rs 0.1.2,        │
+  │                                                            │ Twelve Data REST (proxy symbols), proxy simbol (XAUUSD/IHSG/DXY)                               │
   ├────────────────────────────────────────────────────────────┼─────────────────────────────────────────────────────────────────────────────────────────────────────┤
   │ Persistence (src/storage/* + migrasi                       │ Tabel: symbols, signal_evaluations, alert_jobs, alert_deliveries, orders, order_events, fills,      │
   │ 20260520000000_phase_0_4_foundation.sql)                   │ positions, balances, portfolio_snapshots, risk_events, backtest_runs                                │
@@ -62,7 +62,7 @@
           │              │
           ▼              ▼
      scan_once() ────────────────────────────────────────────────────┐
-     ① Ingest:  MarketDataSource (Binance/TV/Yahoo) → Vec<Candle>    │
+     ① Ingest:  MarketDataSource (Binance/TV/TwelveData) → Vec<Candle>    │
      ② Analyze: indicators → ConfidenceScore → SignalGenerator       │
      ③ Gate:    MTF threshold → session WIB → trap_guard             │
      ④ Plan:    EntryPlan (ATR-based EW/TP/SL)                       │
@@ -95,7 +95,7 @@
   ├───────────────┼────────────────────────────────────────────────────────────┤
   │ Cache         │ redis 0.32 (tokio-comp + connection-manager)               │
   ├───────────────┼────────────────────────────────────────────────────────────┤
-  │ Market data   │ tvdata-rs 0.1.2 (TradingView)                              │
+  │ Market data   │ tvdata-rs 0.1.2 (TradingView), binance-sdk 50 (Binance REST)       │
   ├───────────────┼────────────────────────────────────────────────────────────┤
   │ CLI           │ clap 4 (derive)                                            │
   ├───────────────┼────────────────────────────────────────────────────────────┤

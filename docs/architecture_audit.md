@@ -197,7 +197,7 @@ The following enhancements were implemented in Phase 1.5 (2026-05-22) to reduce 
 `src/data/retry.rs` — `RateLimiter` sliding-window token bucket. Wired to `BinanceDataSource` via `config.exchange.rate_limit_per_second`. Prevents HTTP 429 errors under burst conditions.
 
 ### Retry with Exponential Backoff
-`src/data/retry.rs` — `with_retry(config, op)` helper. All three HTTP adapters (Binance, TradingView, Yahoo) wrap their fetch calls. Config: `[data_sources.retry]` — `max_retries`, `base_delay_ms`, `max_delay_ms`. Permanent 4xx errors are not retried.
+`src/data/retry.rs` — `with_retry(config, op)` helper. All HTTP adapters (Binance, TradingView, Twelve Data) wrap their fetch calls. Config: `[data_sources.retry]` — `max_retries`, `base_delay_ms`, `max_delay_ms`. Permanent 4xx errors are not retried.
 
 ### Binance WebSocket Stream Client
 `src/data/stream.rs` — `CandleStream` trait + `CandleEvent` type.
@@ -229,7 +229,7 @@ enabled = true
 ```
 
 ### Per-Symbol Data Source Routing (Phase 1.6 — Complete)
-`PerSymbolMarketData` (`src/data/mod.rs`) replaces the global `ConfiguredMarketData` as the default data source adapter for all scanner code. Each symbol is routed to its own adapter based on `SymbolConfig.data_source` (or inferred from `exchange`). Proxy symbols use `ProxySymbolEntry` with separate TradingView/Yahoo symbols and automatic fallback. `batch_candles` runs source groups concurrently via `tokio::join!`.
+`PerSymbolMarketData` (`src/data/mod.rs`) replaces the global `ConfiguredMarketData` as the default data source adapter for all scanner code. Each symbol is routed to its own adapter based on `SymbolConfig.data_source` (or inferred from `exchange`). Proxy symbols use `ProxySymbolEntry` with separate TradingView and Twelve Data symbol identifiers. `batch_candles` runs source groups concurrently via `tokio::join!`.
 
 ## Priority Order
 
@@ -341,14 +341,22 @@ actionable trade opportunities.
   (A chart-share JWT with `iss: "tv_chart"` is not a valid user auth token.)
 - Session cookies expire in 2–4 weeks. Renew via browser DevTools on `tradingview.com`.
 
-### Yahoo Finance — Blocked (as of 2025)
+### Twelve Data — Functional (free API key required)
 
-- All `/v8/finance/chart/*` endpoints return **HTTP 429** from Cloudflare Bot Protection.
-- Both cookie-based and plain requests are blocked — the crumb endpoint itself returns 429.
-- `YahooDataSource` is present in `src/data/yahoo.rs` but non-functional for proxy symbols.
-- Recommended workaround: use TradingView for proxy symbols.
-- Future fix path: implement crumb+cookie session flow in `YahooDataSource`, or replace with
-  Alpha Vantage/Twelve Data adapter (both offer free API keys).
+- Implemented in `src/data/twelvedata.rs` as `TwelveDataDataSource`.
+- Free tier: 800 API credits/day. Recommended `scan_interval_secs = 300` for free tier users.
+- No browser session required — static API key via `TWELVE_DATA_API_KEY` env var.
+- Supports all 8 timeframes (M1 through Mn1).
+- Replaces Yahoo Finance for proxy symbols (XAUUSD, DXY, IHSG).
+
+### Yahoo Finance — Removed
+
+Yahoo Finance was previously used as a fallback data source for proxy symbols (XAUUSD, DXY, IHSG).
+It was removed because Cloudflare Bot Protection blocks all `/v8/finance/chart/*` endpoints
+(HTTP 429) unconditionally, making the adapter non-functional without a browser session.
+
+Twelve Data is the replacement. The `YahooDataSource`, `YahooDataSourceConfig`, `yahoo` field in
+`ProxySymbolEntry`, and `yahoo_interval()` helper were deleted in their entirety.
 
 ---
 

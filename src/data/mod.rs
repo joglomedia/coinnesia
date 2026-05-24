@@ -4,7 +4,7 @@ pub mod proxy;
 pub mod retry;
 pub mod stream;
 pub mod tradingview;
-pub mod yahoo;
+pub mod twelvedata;
 
 use std::{
     collections::{BTreeMap, HashMap},
@@ -14,7 +14,6 @@ use std::{
 use anyhow::Result;
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
-use futures::future;
 use serde::{Deserialize, Serialize};
 
 use crate::{config::AppConfig, Candle, Timeframe};
@@ -88,30 +87,21 @@ impl MarketDataSource for EmptyDataSource {
 /// Routes each symbol to its configured data source, based on `SymbolConfig.data_source`
 /// and `ProxySymbolEntry.source` in TOML config.
 ///
-/// Outperforms `ConfiguredMarketData` because:
-/// - No wasted fallback attempts for well-known source/symbol pairs
-/// - `batch_candles` runs Binance, TradingView, and Yahoo groups **concurrently**
-/// - TradingView's own within-group batching (by timeframe) is preserved
+/// `batch_candles` runs Binance, TradingView, and Twelve Data groups **concurrently**.
+/// TradingView's own within-group batching (by timeframe) is preserved.
 pub struct PerSymbolMarketData {
-    binance: Arc<dyn MarketDataSource>,
+    binance:     Arc<dyn MarketDataSource>,
     tradingview: Arc<dyn MarketDataSource>,
-    yahoo: Arc<dyn MarketDataSource>,
-    routing: HashMap<String, SymbolRoute>,
+    twelvedata:  Arc<dyn MarketDataSource>,
+    routing:     HashMap<String, RouteSource>,
     global_fallback: RouteSource,
-}
-
-#[derive(Clone, Debug)]
-struct SymbolRoute {
-    source: RouteSource,
-    /// When primary returns empty, retry on Yahoo with this symbol
-    yahoo_fallback: Option<String>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 enum RouteSource {
     Binance,
     TradingView,
-    Yahoo,
+    TwelveData,
 }
 
 impl PerSymbolMarketData {
@@ -130,11 +120,12 @@ impl PerSymbolMarketData {
                 retry.clone(),
             ),
         );
-        let yahoo: Arc<dyn MarketDataSource> =
-            Arc::new(yahoo::YahooDataSource::new(config.data_sources.yahoo.clone(), retry));
+        let twelvedata: Arc<dyn MarketDataSource> = Arc::new(
+            twelvedata::TwelveDataDataSource::new(config.data_sources.twelvedata.clone(), retry),
+        );
 
         let global_fallback = route_source_from_str(&config.data_sources.fallback);
-        let mut routing: HashMap<String, SymbolRoute> = HashMap::new();
+        let mut routing: HashMap<String, RouteSource> = HashMap::new();
 
         // Route main trading symbols
         for sym in &config.symbols {
@@ -142,64 +133,39 @@ impl PerSymbolMarketData {
                 .data_source
                 .as_deref()
                 .unwrap_or_else(|| default_source_for_exchange(&sym.exchange, &config.data_sources.primary));
-            routing.insert(
-                sym.symbol.to_uppercase(),
-                SymbolRoute { source: route_source_from_str(src), yahoo_fallback: None },
-            );
+            routing.insert(sym.symbol.to_uppercase(), route_source_from_str(src));
         }
 
-        // Route proxy symbols with fallback
+        // Route proxy symbols
         let px = &config.proxy_symbols;
         for entry in [&px.xauusd, &px.ihsg, &px.dxy] {
             let source = route_source_from_str(&entry.source);
-            let primary = entry.symbol().to_uppercase();
-            let yahoo_fb = if source != RouteSource::Yahoo {
-                Some(entry.yahoo.clone())
-            } else {
-                None
-            };
-            routing.insert(primary.clone(), SymbolRoute { source, yahoo_fallback: yahoo_fb });
-            // Register Yahoo symbol too so direct Yahoo calls always resolve
-            let yahoo_key = entry.yahoo.to_uppercase();
-            if yahoo_key != primary {
-                routing.entry(yahoo_key).or_insert(SymbolRoute {
-                    source: RouteSource::Yahoo,
-                    yahoo_fallback: None,
-                });
-            }
+            routing.insert(entry.symbol().to_uppercase(), source);
         }
 
-        Self { binance, tradingview, yahoo, routing, global_fallback }
+        Self { binance, tradingview, twelvedata, routing, global_fallback }
     }
 
     fn adapter(&self, source: RouteSource) -> &Arc<dyn MarketDataSource> {
         match source {
-            RouteSource::Binance => &self.binance,
+            RouteSource::Binance     => &self.binance,
             RouteSource::TradingView => &self.tradingview,
-            RouteSource::Yahoo => &self.yahoo,
+            RouteSource::TwelveData  => &self.twelvedata,
         }
     }
 
-    fn resolve(&self, symbol: &str) -> (RouteSource, Option<&str>) {
-        match self.routing.get(&symbol.to_uppercase()) {
-            Some(r) => (r.source, r.yahoo_fallback.as_deref()),
-            None => (self.global_fallback, None),
-        }
+    fn resolve(&self, symbol: &str) -> RouteSource {
+        self.routing
+            .get(&symbol.to_uppercase())
+            .copied()
+            .unwrap_or(self.global_fallback)
     }
 }
 
 #[async_trait]
 impl MarketDataSource for PerSymbolMarketData {
     async fn candles(&self, symbol: &str, timeframe: Timeframe, limit: usize) -> Result<Vec<Candle>> {
-        let (source, yahoo_fb) = self.resolve(symbol);
-        match self.adapter(source).candles(symbol, timeframe, limit).await {
-            Ok(c) if !c.is_empty() => return Ok(c),
-            _ => {}
-        }
-        if let Some(fb_sym) = yahoo_fb {
-            return self.yahoo.candles(fb_sym, timeframe, limit).await;
-        }
-        Ok(Vec::new())
+        self.adapter(self.resolve(symbol)).candles(symbol, timeframe, limit).await
     }
 
     async fn batch_candles(
@@ -207,75 +173,45 @@ impl MarketDataSource for PerSymbolMarketData {
         requests: &[CandleRequest],
     ) -> Result<BTreeMap<CandleRequest, Vec<Candle>>> {
         let mut binance_reqs: Vec<CandleRequest> = Vec::new();
-        let mut tv_reqs: Vec<CandleRequest> = Vec::new();
-        let mut yahoo_reqs: Vec<CandleRequest> = Vec::new();
-        let mut fallback_map: HashMap<CandleRequest, String> = HashMap::new();
+        let mut tv_reqs:      Vec<CandleRequest> = Vec::new();
+        let mut td_reqs:      Vec<CandleRequest> = Vec::new();
 
         for req in requests {
-            let (source, yahoo_fb) = self.resolve(&req.symbol);
-            match source {
-                RouteSource::Binance => binance_reqs.push(req.clone()),
-                RouteSource::TradingView => {
-                    tv_reqs.push(req.clone());
-                    if let Some(fb) = yahoo_fb {
-                        fallback_map.insert(req.clone(), fb.to_owned());
-                    }
-                }
-                RouteSource::Yahoo => yahoo_reqs.push(req.clone()),
+            match self.resolve(&req.symbol) {
+                RouteSource::Binance     => binance_reqs.push(req.clone()),
+                RouteSource::TradingView => tv_reqs.push(req.clone()),
+                RouteSource::TwelveData  => td_reqs.push(req.clone()),
             }
         }
 
         // Fetch all source groups concurrently
-        let (binance_res, tv_res, yahoo_res) = future::join3(
-            batch_group(&self.binance, &binance_reqs),
+        let (binance_res, tv_res, td_res) = tokio::join!(
+            batch_group(&self.binance,     &binance_reqs),
             batch_group(&self.tradingview, &tv_reqs),
-            batch_group(&self.yahoo, &yahoo_reqs),
-        )
-        .await;
+            batch_group(&self.twelvedata,  &td_reqs),
+        );
 
         let mut output: BTreeMap<CandleRequest, Vec<Candle>> = BTreeMap::new();
         output.extend(binance_res);
-        output.extend(yahoo_res);
-
-        // TV results: collect empties that have a Yahoo fallback
-        let mut needs_yahoo_fb: Vec<(CandleRequest, CandleRequest)> = Vec::new();
-        for (req, candles) in tv_res {
-            if candles.is_empty() {
-                if let Some(fb_sym) = fallback_map.get(&req) {
-                    let fb_req = CandleRequest::new(fb_sym, req.timeframe, req.limit);
-                    needs_yahoo_fb.push((req, fb_req));
-                    continue;
-                }
-            }
-            output.insert(req, candles);
-        }
-
-        // Batch-fetch Yahoo fallbacks
-        if !needs_yahoo_fb.is_empty() {
-            let fb_reqs: Vec<CandleRequest> = needs_yahoo_fb.iter().map(|(_, fb)| fb.clone()).collect();
-            let fb_results = batch_group(&self.yahoo, &fb_reqs).await;
-            for (orig_req, fb_req) in needs_yahoo_fb {
-                output.insert(orig_req, fb_results.get(&fb_req).cloned().unwrap_or_default());
-            }
-        }
-
+        output.extend(tv_res);
+        output.extend(td_res);
         Ok(output)
     }
 }
 
-// ─── ConfiguredMarketData (kept for backward compat) ──────────────────────────
+// ─── ConfiguredMarketData ─────────────────────────────────────────────────────
 
 #[derive(Clone)]
 pub struct ConfiguredMarketData {
-    primary: DataProvider,
+    primary:  DataProvider,
     fallback: DataProvider,
 }
 
 #[derive(Clone)]
 enum DataProvider {
     Binance(binance::BinanceDataSource),
-    Yahoo(yahoo::YahooDataSource),
     TradingView(tradingview::TradingViewDataSource),
+    TwelveData(twelvedata::TwelveDataDataSource),
     Empty(EmptyDataSource),
 }
 
@@ -283,7 +219,7 @@ impl ConfiguredMarketData {
     pub fn from_config(config: &AppConfig) -> Self {
         let retry = config.data_sources.retry.clone();
         let rate_limit = config.exchange.rate_limit_per_second as u32;
-        let primary = provider_from_name(&config.data_sources.primary, config, rate_limit, retry.clone());
+        let primary  = provider_from_name(&config.data_sources.primary,  config, rate_limit, retry.clone());
         let fallback = provider_from_name(&config.data_sources.fallback, config, rate_limit, retry);
         Self { primary, fallback }
     }
@@ -303,10 +239,10 @@ impl MarketDataSource for ConfiguredMarketData {
 impl MarketDataSource for DataProvider {
     async fn candles(&self, symbol: &str, timeframe: Timeframe, limit: usize) -> Result<Vec<Candle>> {
         match self {
-            Self::Binance(s) => s.candles(symbol, timeframe, limit).await,
-            Self::Yahoo(s) => s.candles(symbol, timeframe, limit).await,
+            Self::Binance(s)     => s.candles(symbol, timeframe, limit).await,
             Self::TradingView(s) => s.candles(symbol, timeframe, limit).await,
-            Self::Empty(s) => s.candles(symbol, timeframe, limit).await,
+            Self::TwelveData(s)  => s.candles(symbol, timeframe, limit).await,
+            Self::Empty(s)       => s.candles(symbol, timeframe, limit).await,
         }
     }
 }
@@ -323,12 +259,12 @@ fn provider_from_name(
             rate_limit,
             retry,
         )),
-        "yahoo" => DataProvider::Yahoo(yahoo::YahooDataSource::new(
-            config.data_sources.yahoo.clone(),
-            retry,
-        )),
         "tradingview" => DataProvider::TradingView(tradingview::TradingViewDataSource::new(
             config.data_sources.tradingview.clone(),
+            retry,
+        )),
+        "twelvedata" => DataProvider::TwelveData(twelvedata::TwelveDataDataSource::new(
+            config.data_sources.twelvedata.clone(),
             retry,
         )),
         _ => DataProvider::Empty(EmptyDataSource),
@@ -372,18 +308,19 @@ pub fn binance_ws_stream(config: &AppConfig) -> Option<binance_ws::BinanceWsStre
 
 fn default_source_for_exchange<'a>(exchange: &str, global_primary: &'a str) -> &'a str {
     match exchange.to_lowercase().as_str() {
-        "binance" => "binance",
+        "binance"     => "binance",
         "tradingview" => "tradingview",
-        "yahoo" => "yahoo",
-        _ => global_primary,
+        "twelvedata"  => "twelvedata",
+        _             => global_primary,
     }
 }
 
 fn route_source_from_str(name: &str) -> RouteSource {
     match name {
-        "binance" => RouteSource::Binance,
+        "binance"     => RouteSource::Binance,
         "tradingview" => RouteSource::TradingView,
-        _ => RouteSource::Yahoo,
+        "twelvedata"  => RouteSource::TwelveData,
+        _             => RouteSource::TwelveData, // default fallback
     }
 }
 
@@ -400,13 +337,13 @@ async fn batch_group(
 pub fn parse_timeframe(value: &str) -> Result<Timeframe> {
     use anyhow::anyhow;
     match value {
-        "1m" | "M1" => Ok(Timeframe::M1),
-        "5m" | "M5" => Ok(Timeframe::M5),
-        "15m" | "M15" => Ok(Timeframe::M15),
-        "1h" | "H1" => Ok(Timeframe::H1),
-        "4h" | "H4" => Ok(Timeframe::H4),
-        "1d" | "D1" => Ok(Timeframe::D1),
-        "1w" | "W1" => Ok(Timeframe::W1),
+        "1m" | "M1"          => Ok(Timeframe::M1),
+        "5m" | "M5"          => Ok(Timeframe::M5),
+        "15m" | "M15"        => Ok(Timeframe::M15),
+        "1h" | "H1"          => Ok(Timeframe::H1),
+        "4h" | "H4"          => Ok(Timeframe::H4),
+        "1d" | "D1"          => Ok(Timeframe::D1),
+        "1w" | "W1"          => Ok(Timeframe::W1),
         "1mo" | "MN1" | "Mn1" => Ok(Timeframe::Mn1),
         _ => Err(anyhow!("unsupported timeframe {value}")),
     }
@@ -414,22 +351,13 @@ pub fn parse_timeframe(value: &str) -> Result<Timeframe> {
 
 pub fn binance_interval(timeframe: Timeframe) -> &'static str {
     match timeframe {
-        Timeframe::M1 => "1m",
-        Timeframe::M5 => "5m",
+        Timeframe::M1  => "1m",
+        Timeframe::M5  => "5m",
         Timeframe::M15 => "15m",
-        Timeframe::H1 => "1h",
-        Timeframe::H4 => "4h",
-        Timeframe::D1 => "1d",
-        Timeframe::W1 => "1w",
+        Timeframe::H1  => "1h",
+        Timeframe::H4  => "4h",
+        Timeframe::D1  => "1d",
+        Timeframe::W1  => "1w",
         Timeframe::Mn1 => "1M",
-    }
-}
-
-pub fn yahoo_interval(timeframe: Timeframe) -> Option<&'static str> {
-    match timeframe {
-        Timeframe::D1 => Some("1d"),
-        Timeframe::W1 => Some("1wk"),
-        Timeframe::Mn1 => Some("1mo"),
-        _ => None,
     }
 }

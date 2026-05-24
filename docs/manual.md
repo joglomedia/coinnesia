@@ -22,7 +22,7 @@ Module layout:
 | `src/app/` | AppState bootstrap, Supervisor, shutdown, reconciliation |
 | `src/api/` | Axum router, handlers, auth middleware, DTOs |
 | `src/config/` | TOML schema, AppConfig loader, asset profiles |
-| `src/data/` | MarketDataSource trait, Binance/TradingView/Yahoo adapters, retry, WS stream |
+| `src/data/` | MarketDataSource trait, Binance/TradingView/TwelveData adapters, retry, WS stream |
 | `src/indicators/` | Deterministic indicator implementations (14 modules) |
 | `src/strategy/` | Six-layer evaluation, confidence scoring, entry/TP/SL planning |
 | `src/scanner/` | Ingestion, analysis, publishing pipeline |
@@ -126,7 +126,7 @@ RUST_LOG=info cargo run -- scan-once
 ```
 ┌─────────────────────────────────────────────────────────────────────┐
 │ Stage 1 — Proxy Fetch (non-blocking)                                 │
-│ Source: proxy_symbols.*.source (tradingview or yahoo)                │
+│ Source: proxy_symbols.*.source (tradingview or twelvedata)           │
 │ Symbols: OANDA:XAUUSD, IDX:COMPOSITE, TVC:DXY  →  ProxySnapshot    │
 │ Failure: .unwrap_or_default() → empty snapshot, scan continues      │
 └──────────────────────────────┬──────────────────────────────────────┘
@@ -732,34 +732,114 @@ The user-session JWT differs from a chart-share token in its payload:
 
 **Verification:** Decode any JWT at `jwt.io` to inspect its payload before using it.
 
-**Yahoo Finance (status: blocked as of 2025):**
+---
 
-Yahoo Finance now enforces Cloudflare Bot Protection on all `/v8/finance/chart/*` endpoints.
-Plain HTTP requests (without a valid browser session + crumb token) receive **HTTP 429** on
-every attempt. `YahooDataSource` is not currently functional for proxy symbols.
+#### Twelve Data Setup
 
-Workaround options:
-- Use `source = "tradingview"` for proxy symbols (XAUUSD/IHSG/DXY) — works with valid session.
-- Use Alpha Vantage or Twelve Data (free API key) as an alternative for D1 commodity/index data.
-- Yahoo remains useful only if a browser-session + crumb flow is implemented in the adapter.
+Twelve Data provides a reliable REST API for proxy symbols (XAUUSD, DXY, IHSG) without
+requiring a browser session. It works with a static API key that does not expire.
+
+**Step 1 — Obtain a free API key**
+
+Register at `https://twelvedata.com/pricing` → select the free plan → copy the API key from
+your dashboard. Free tier: 800 API credits/day.
+
+**Step 2 — Add the key to `.env`**
+
+```bash
+TWELVE_DATA_API_KEY=your_api_key_here
+```
+
+**Step 3 — Enable the adapter in config**
+
+```toml
+[data_sources.twelvedata]
+enabled     = true
+base_url    = "https://api.twelvedata.com"
+api_key_env = "TWELVE_DATA_API_KEY"
+```
+
+**Step 4 — Verify symbols before switching**
+
+Before setting `source = "twelvedata"` for any proxy symbol, confirm the symbol works with
+your API key:
+
+```bash
+# Gold spot
+curl "https://api.twelvedata.com/time_series?symbol=XAU/USD&interval=1day&outputsize=3&apikey=YOUR_KEY"
+
+# US Dollar Index
+curl "https://api.twelvedata.com/time_series?symbol=DXY&interval=1day&outputsize=3&apikey=YOUR_KEY"
+
+# Jakarta Composite (IHSG) — verify this symbol is accessible on your plan
+curl "https://api.twelvedata.com/symbol_search?symbol=COMPOSITE&apikey=YOUR_KEY"
+```
+
+A successful response has `"status": "ok"` with a non-empty `"values"` array.
+An error response has `"status": "error"` with a `"message"` field.
+
+**Step 5 — Switch proxy symbols to Twelve Data**
+
+After confirming each symbol works, update `config/default.toml`:
+
+```toml
+[proxy_symbols.xauusd]
+tradingview = "OANDA:XAUUSD"
+twelvedata  = "XAU/USD"         # confirmed working
+source      = "twelvedata"      # changed from "tradingview"
+
+[proxy_symbols.dxy]
+tradingview = "TVC:DXY"
+twelvedata  = "DXY"             # verify first
+source      = "twelvedata"
+
+[proxy_symbols.ihsg]
+tradingview = "IDX:COMPOSITE"
+twelvedata  = "COMPOSITE"       # verify first
+source      = "tradingview"     # keep TV until twelvedata symbol is confirmed
+```
+
+**Step 6 — Verify with scan-once**
+
+```bash
+cargo run -- scan-once
+```
+
+No `WARN retrying` lines for proxy symbols indicates successful fetches.
+
+**Rate limit guidance (free tier)**
+
+| Scenario | Req/day | Within free tier? |
+|---|---|---|
+| 3 proxies × 60s interval (default) | ~4320 | No (800 limit) |
+| 3 proxies × 300s interval | ~864 | Yes (marginal) |
+| 3 proxies × 600s interval | ~432 | Yes (comfortable) |
+
+To adjust scan interval:
+```toml
+[runtime]
+scan_interval_secs = 300   # 5 minutes — recommended for free tier
+```
+
+Paid plans (Starter $8/mo: 160 req/min, ~230k req/day) remove this constraint entirely.
 
 **Proxy symbols configuration:**
 
 ```toml
 [proxy_symbols.xauusd]
 tradingview = "OANDA:XAUUSD"
-yahoo = "GC=F"
-source = "tradingview"   # "yahoo" is currently blocked
+twelvedata  = "XAU/USD"
+source      = "tradingview"   # switch to "twelvedata" when TradingView session expires
 
 [proxy_symbols.ihsg]
 tradingview = "IDX:COMPOSITE"
-yahoo = "^JKSE"
-source = "tradingview"
+twelvedata  = "COMPOSITE"
+source      = "tradingview"
 
 [proxy_symbols.dxy]
 tradingview = "TVC:DXY"
-yahoo = "DX-Y.NYB"
-source = "tradingview"
+twelvedata  = "DXY"
+source      = "tradingview"
 ```
 
 ### Symbols configuration
@@ -768,7 +848,7 @@ source = "tradingview"
 [[symbols]]
 symbol      = "BTCUSDT"    # exchange-native symbol
 asset_class = "btc"        # btc | altcoin | gold | forex | stocks_idx | stocks_us
-exchange    = "binance"    # binance | tradingview | yahoo (affects default data_source)
+exchange    = "binance"    # binance | tradingview | twelvedata (affects default data_source)
 data_source = "binance"    # explicit override (optional)
 timeframes  = ["15m", "1h", "4h", "1d"]  # first entry = primary scan timeframe
 ```

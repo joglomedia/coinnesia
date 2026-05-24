@@ -536,7 +536,7 @@ mod tests {
         let scanner = Scanner::with_data_source(config, Arc::new(MockDataSource { candles }));
         let report = scanner.scan_once().await.expect("scan succeeds");
 
-        assert_eq!(report.scanned, 3);
+        assert_eq!(report.scanned, 4);
         assert!(report
             .signals
             .iter()

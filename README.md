@@ -2,7 +2,7 @@
 
 `coinnesia` is a Rust 2021 multi-asset trading signal scanner and trading-platform foundation. It ports TradingView Pine Script strategy ideas into an async Rust engine that can scan crypto, gold tokens, forex, and equities, persist/cached signal output, send Telegram alerts, and expose CLI plus Axum API controls.
 
-Current status: Phase 0 and Phase 1 are implemented. The service runtime, Axum health/config/scan API, Postgres and Valkey foundations, Binance/TradingView/Yahoo market-data adapters, indicator suite, six-layer strategy scanner, scanner publishing pipeline, and Telegram alert worker are in place. Remaining major work is Phase 2+ live/paper trading, portfolio/risk execution integration, and event-driven backtesting.
+Current status: Phase 0 and Phase 1 are implemented. The service runtime, Axum health/config/scan API, Postgres and Valkey foundations, Binance/TradingView/Twelve Data market-data adapters, indicator suite, six-layer strategy scanner, scanner publishing pipeline, and Telegram alert worker are in place. Remaining major work is Phase 2+ live/paper trading, portfolio/risk execution integration, and event-driven backtesting.
 
 ## Features In Place
 
@@ -13,8 +13,8 @@ Current status: Phase 0 and Phase 1 are implemented. The service runtime, Axum h
 - Optional Valkey cache with namespaced keys, TTL helpers, JSON helpers, locks, dedupe, pub/sub, rate-limit buckets, and heartbeats.
 - Market data through the internal `MarketDataSource` trait:
   - Binance public HTTP klines.
-  - TradingView via `tvdata-rs`.
-  - Yahoo Finance chart fallback for daily+ data and proxies.
+  - TradingView via `tvdata-rs` for forex, indices, and proxy symbols.
+  - Twelve Data REST API for proxy symbols (XAUUSD, DXY, IHSG) — free API key required.
 - Deterministic indicators: EMA, ATR/RMA, RSI/RMA, ADX/DMI, MACD, VWAP, volume, candle shape, SMC, liquidity, order block, support/resistance, and regime.
 - Six-layer strategy pipeline with confidence scoring, timeframe thresholds, session gating, trap guard, regime blocking, and ATR-based EW/TP/SL.
 - Scanner pipeline split into ingestion, analysis, and publishing with bounded symbol concurrency.
@@ -102,7 +102,7 @@ Major sections:
 - `[data_sources]`, `[exchange]`, `[trading]`, `[portfolio]`, `[risk]`, `[backtest]`
 - `[[symbols]]` and `[proxy_symbols]`
 
-Secrets are env-driven. Do not commit Binance, TradingView, Telegram, Postgres, or Valkey credentials.
+Secrets are env-driven. Do not commit Binance, TradingView, Twelve Data, Telegram, Postgres, or Valkey credentials.
 
 ## Architecture
 
@@ -111,7 +111,7 @@ src/
 ├── app/           service kernel, shutdown, supervisor, reconciliation gate
 ├── api/           Axum routes, auth, DTOs, metrics middleware
 ├── config/        TOML config structs, defaults, asset profile weights
-├── data/          MarketDataSource trait and Binance/TradingView/Yahoo/proxy adapters
+├── data/          MarketDataSource trait and Binance/TradingView/TwelveData/proxy adapters
 ├── storage/       Postgres pool, migrations, records, repositories
 ├── cache/         Valkey keys, locks, pub/sub, rate limits, snapshots
 ├── indicators/    technical indicator modules

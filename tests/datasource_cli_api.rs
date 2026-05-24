@@ -116,8 +116,8 @@ async fn api_scan_uses_configured_datasource_and_returns_scan_result() {
     assert_eq!(response.status(), StatusCode::OK);
     let body = json_response(response).await;
     assert_eq!(body["accepted"], true);
-    assert_eq!(body["scanned"], 3);
-    assert_eq!(body["signals"], 3);
+    assert_eq!(body["scanned"], 4);
+    assert_eq!(body["signals"], 4);
     assert_requested_symbols(&server.request_lines(), ["BTCUSDT", "ETHUSDT", "PAXGUSDT"]);
 
     std::env::remove_var("COINNESIA_TEST_DATASOURCE_API_TOKEN");
@@ -143,8 +143,8 @@ fn cli_scan_once_uses_configured_datasource_and_completes_cycle() {
         "scan-once failed\nstdout:\n{stdout}\nstderr:\n{stderr}"
     );
     assert!(combined.contains("scan cycle completed"));
-    assert!(combined.contains("scanned=3"));
-    assert!(combined.contains("signals=3"));
+    assert!(combined.contains("scanned=4"));
+    assert!(combined.contains("signals=4"));
     assert_requested_symbols(&server.request_lines(), ["BTCUSDT", "ETHUSDT", "PAXGUSDT"]);
 
     let _ = fs::remove_file(config_path);

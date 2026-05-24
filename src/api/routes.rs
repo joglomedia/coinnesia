@@ -181,7 +181,7 @@ mod tests {
 
         assert_eq!(response.status(), StatusCode::OK);
         let body = json_response(response).await;
-        assert_eq!(body["symbols"], 3);
+        assert_eq!(body["symbols"], 4);
         assert_eq!(body["exchange"], "paper");
         assert!(body.get("auth_token_env").is_none());
         assert!(body.get("api_key").is_none());

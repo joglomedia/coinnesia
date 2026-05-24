@@ -176,8 +176,8 @@ pub struct DataSourcesConfig {
     pub candle_limit: usize,
     pub scanning_mode: String,
     pub retry: RetryConfig,
-    pub yahoo: YahooDataSourceConfig,
     pub tradingview: TradingViewDataSourceConfig,
+    pub twelvedata: TwelveDataDataSourceConfig,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -188,19 +188,19 @@ pub struct RetryConfig {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct YahooDataSourceConfig {
-    pub enabled: bool,
-    pub base_url: String,
-    pub adjust: bool,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TradingViewDataSourceConfig {
     pub enabled: bool,
     pub auth_token_env: String,
     pub session_id_env: String,
     pub session_signature_env: String,
     pub device_token_env: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TwelveDataDataSourceConfig {
+    pub enabled: bool,
+    pub base_url: String,
+    pub api_key_env: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -328,44 +328,46 @@ pub struct SymbolConfig {
     pub asset_class: AssetClass,
     pub exchange: String,
     pub timeframes: Vec<String>,
-    /// Override the data source for this symbol: "binance" | "tradingview" | "yahoo".
+    /// Override the data source for this symbol: "binance" | "tradingview" | "twelvedata".
     /// When absent, derived from `exchange` (binance → "binance", else global primary).
     #[serde(default)]
     pub data_source: Option<String>,
 }
 
-/// Per-proxy-symbol config: separate TV and Yahoo identifiers + preferred source.
+/// Per-proxy-symbol config: separate TradingView and Twelve Data identifiers + preferred source.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ProxySymbolEntry {
     /// TradingView symbol (e.g. "OANDA:XAUUSD"). Used when source = "tradingview".
     #[serde(default)]
     pub tradingview: Option<String>,
-    /// Yahoo Finance symbol (e.g. "GC=F"). Always present as canonical fallback.
-    pub yahoo: String,
-    /// Preferred data source: "tradingview" | "yahoo". Defaults to "yahoo".
+    /// Twelve Data symbol (e.g. "XAU/USD"). Used when source = "twelvedata".
+    #[serde(default)]
+    pub twelvedata: Option<String>,
+    /// Preferred data source: "tradingview" | "twelvedata". Defaults to "twelvedata".
     #[serde(default = "default_proxy_source")]
     pub source: String,
 }
 
 fn default_proxy_source() -> String {
-    "yahoo".to_owned()
+    "twelvedata".to_owned()
 }
 
 impl ProxySymbolEntry {
     /// Returns the symbol string for the preferred source.
-    /// Falls back to `yahoo` if the preferred source has no symbol configured.
     pub fn symbol(&self) -> &str {
         match self.source.as_str() {
-            "tradingview" => self.tradingview.as_deref().unwrap_or(&self.yahoo),
-            _ => &self.yahoo,
+            "tradingview" => self.tradingview.as_deref().unwrap_or(""),
+            _ => self.twelvedata.as_deref().unwrap_or(""),
         }
     }
 
-    /// Convenience constructor for tests: creates a Yahoo-only entry.
-    pub fn from_yahoo(symbol: impl Into<String>) -> Self {
+    /// Convenience constructor for tests: creates a Binance-routed proxy entry.
+    /// Symbol is fetched via the default (Binance) data source in test scenarios.
+    pub fn from_binance(symbol: impl Into<String>) -> Self {
+        let sym = symbol.into();
         Self {
             tradingview: None,
-            yahoo: symbol.into(),
+            twelvedata: Some(sym),
             source: default_proxy_source(),
         }
     }

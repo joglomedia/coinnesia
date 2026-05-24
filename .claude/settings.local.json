@@ -18,7 +18,9 @@
       "Bash(cargo check *)",
       "Bash(grep -v \"generated\\\\|^warning:$\")",
       "Bash(curl *)",
-      "Bash(grep -v \"^$\")"
+      "Bash(grep -v \"^$\")",
+      "WebFetch(domain:twelvedata.com)",
+      "Bash(python3 *)"
     ]
   }
 }

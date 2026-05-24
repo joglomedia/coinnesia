@@ -10,12 +10,12 @@ Implementation status: Phase 0 and Phase 1 are complete in the current codebase.
 
 | Asset Class | Examples | Data Source | Key Characteristics |
 |---|---|---|---|
-| **BTC / Large-cap Crypto** | BTCUSDT, ETHUSDT | Binance, TradingView, Yahoo Finance | Stable structure, HTF dominant, high liquidity |
-| **Altcoins** | SOL, DOGE, PEPE, WIF, SUI, ARB, OP | Binance, TradingView, Yahoo Finance | Volatile, wick-heavy, fake breakouts, thin liquidity |
-| **Gold Tokens** | PAXGUSDT, XAUTUSDT | Binance, TradingView, Yahoo Finance | Follows XAUUSD spot, macro/session driven |
-| **Forex** | EURUSD, GBPJPY, USDJPY | TradingView, Yahoo Finance | Session-driven, spread-sensitive, HTF bias |
-| **Stocks (US)** | AAPL, TSLA, SPY | TradingView, Yahoo Finance | Market hours, volume-driven, earnings sensitivity |
-| **Stocks (IDX)** | BBCA, TLKM, BMRI | TradingView, Yahoo Finance | IDX session gate, IHSG benchmark, broker flow |
+| **BTC / Large-cap Crypto** | BTCUSDT, ETHUSDT | Binance, TradingView, Twelve Data | Stable structure, HTF dominant, high liquidity |
+| **Altcoins** | SOL, DOGE, PEPE, WIF, SUI, ARB, OP | Binance, TradingView, Twelve Data | Volatile, wick-heavy, fake breakouts, thin liquidity |
+| **Gold Tokens** | PAXGUSDT, XAUTUSDT | Binance, TradingView, Twelve Data | Follows XAUUSD spot, macro/session driven |
+| **Forex** | EURUSD, GBPJPY, USDJPY | TradingView, Twelve Data | Session-driven, spread-sensitive, HTF bias |
+| **Stocks (US)** | AAPL, TSLA, SPY | TradingView, Twelve Data | Market hours, volume-driven, earnings sensitivity |
+| **Stocks (IDX)** | BBCA, TLKM, BMRI | TradingView, Twelve Data | IDX session gate, IHSG benchmark, broker flow |
 
 ## System Architecture and Design
 
@@ -44,15 +44,15 @@ Postgres is the durable source of truth. Valkey is a Redis-compatible hot-state 
    - **Not preferred**: `tradingview-rs` is treated as legacy/backup research material and should not be the default project dependency for new TradingView datasource work.
 2. **Binance HTTP/WebSocket adapter** — historical and near-real-time crypto market data for BTC, altcoins, and PAXG/XAUT gold tokens. Public klines do not require API credentials; account/trading endpoints require API key/secret.
    - **WebSocket streaming** (`BinanceWsStream`, `src/data/binance_ws.rs`): event-driven kline stream using Binance combined-stream endpoint. Enabled via `data_sources.scanning_mode = "streaming"` + `exchange.binance.ws.enabled = true`. Reduces signal latency from ~60 s (polling) to <200 ms (closed-bar event). Covers only symbols with `exchange = "binance"` in config.
-3. **Yahoo Finance chart adapter** — fallback/supplementary historical OHLCV for daily/weekly/monthly data and proxy symbols (XAUUSD, DXY, IHSG-style benchmarks). No API key required.
-4. **Forex data** — via TradingView or Yahoo Finance chart fallback for major/minor/exotic pairs.
-5. **Proxy symbols** — XAUUSD spot for gold token validation, IDX:COMPOSITE (IHSG) for Indonesian equities benchmark, DXY for macro context. Fetched via TradingView or Yahoo Finance chart fallback.
+3. **Twelve Data adapter — reliable REST API for proxy symbols (XAUUSD, DXY, IHSG). Free-tier API key required (https://twelvedata.com/pricing). Supports all timeframes M1–Mn1.
+4. **Forex data** — via TradingView for major/minor/exotic pairs.
+5. **Proxy symbols** — XAUUSD spot for gold token validation, IDX:COMPOSITE (IHSG) for Indonesian equities benchmark, DXY for macro context. Fetched via TradingView or Twelve Data.
 
-This layer handles authentication, rate limiting, concurrent data fetching for multiple symbols, and session-aware scheduling (Asia/Europe/USA timezone gating). Each symbol's asset profile determines which data source is preferred, with fallback ordering: Binance (crypto) → TradingView via `tvdata-rs` → Yahoo Finance chart fallback.
+This layer handles authentication, rate limiting, concurrent data fetching for multiple symbols, and session-aware scheduling (Asia/Europe/USA timezone gating). Each symbol's asset profile determines which data source is preferred, with fallback ordering: Binance (crypto) → TradingView via tvdata-rs → Twelve Data.
 
 **Resilience layer**: All HTTP adapters wrap their fetch calls in `data::retry::with_retry()` (exponential backoff, configurable via `[data_sources.retry]`). The Binance adapter additionally gates every request through an in-process `RateLimiter` to honour `exchange.rate_limit_per_second` and prevent HTTP 429 responses. WebSocket connections auto-reconnect with backoff on disconnect.
 
-**Per-symbol data source routing** (`PerSymbolMarketData`, `src/data/mod.rs`): Each symbol is assigned a preferred data source via `SymbolConfig.data_source` or inferred from `exchange`. Proxy symbols (`ProxySymbolEntry`) carry separate TradingView and Yahoo Finance symbol identifiers with an explicit `source` preference and automatic Yahoo fallback. `PerSymbolMarketData.batch_candles` groups requests by source and executes Binance, TradingView, and Yahoo groups **concurrently** for maximum throughput.
+**Per-symbol data source routing** (`PerSymbolMarketData`, `src/data/mod.rs`): Each symbol is assigned a preferred data source via `SymbolConfig.data_source` or inferred from `exchange`. Proxy symbols (`ProxySymbolEntry`) carry separate TradingView and Twelve Data symbol identifiers with an explicit source preference. `PerSymbolMarketData.batch_candles` groups requests by source and executes Binance, TradingView, and Twelve Data groups **concurrently** for maximum throughput.
 
 **Service Runtime Layer**: Owns 24/7 operation. It starts and supervises the Axum API, scanner workers, alert workers, trading execution workers, reconciliation workers, and graceful shutdown. Live trading must remain disabled until startup reconciliation confirms exchange, Postgres, risk, and kill-switch state are consistent.
 
@@ -820,7 +820,7 @@ src/
 │   ├── mod.rs              # Data layer orchestration
 │   ├── tradingview.rs      # TradingView fetcher
 │   ├── binance.rs          # Binance fetcher
-│   ├── yahoo.rs            # Yahoo Finance chart fallback fetcher
+│   ├── twelvedata.rs       # Twelve Data REST adapter for proxy symbols
 │   └── proxy.rs            # Proxy symbol fetcher (XAUUSD, IHSG, DXY)
 ├── storage/
 │   ├── mod.rs              # Postgres pool + repository registry
@@ -1054,14 +1054,14 @@ device_token_env = "TRADINGVIEW_DEVICE_T"
 
 Never commit TradingView cookies, browser session IDs, or auth tokens. Binance API key/secret are also loaded from config/env vars and are required only for authenticated exchange/account features; public Binance klines do not require credentials.
 
-Yahoo Finance chart fallback requires no authentication:
+Twelve Data REST adapter requires an API key:
 
 ```rust
-// Pseudocode: implementation lives behind data::YahooDataSource.
-let candles = yahoo.candles("GC=F", Timeframe::D1, 250).await?;
+// Pseudocode: implementation lives behind data::TwelveDataDataSource.
+let candles = twelvedata.candles("XAU/USD", Timeframe::D1, 250).await?;
 ```
 
-**Data source priority**: Binance (crypto real-time) → TradingView via `tvdata-rs` (all assets, intraday) → Yahoo Finance chart fallback (daily+ data, proxy symbols, no-auth scenarios).
+**Data source priority**: Binance (crypto real-time) → TradingView via tvdata-rs (all assets, intraday) → Twelve Data (proxy symbols, free API key)..
 
 ### Error Handling and Resilience
 
@@ -1688,7 +1688,7 @@ Based on the full multi-asset implementation with 24/7 service runtime, API, per
 
 **Phase 1 — Core Scanner (40-50 hours) — implemented**:
 - Project setup and dependencies: 2 hours
-- Data fetching module (TradingView + Binance + Yahoo Finance + proxy): 5 hours
+- Data fetching module (TradingView + Binance + Twelve Data + proxy):: 5 hours
 - Core indicator implementations (EMA, ATR, RSI, ADX, MACD, VWAP, Volume): 10 hours
 - Advanced indicators (SMC, liquidity, OB, S/R, regime, candle engine): 12 hours
 - Strategy engine (confidence scorer, signals, MTF): 6 hours

@@ -12,7 +12,7 @@ Status after completing Phase 0 and Phase 1:
 - optional Postgres pool, migration runner, base schema, and repositories for core durable records
 - optional Valkey client with key namespace, TTL JSON/string helpers, dedupe, locks, pub/sub, rate-limit buckets, and heartbeat helpers
 - observability model with component health, heartbeat staleness, readiness, and Prometheus-compatible counters
-- market data ingestion through the internal `MarketDataSource` trait with Binance HTTP klines, TradingView via `tvdata-rs`, Yahoo Finance chart fallback, quotes, batch candles, and proxy prefetch
+- market data ingestion through the internal `MarketDataSource` trait with Binance HTTP klines, TradingView via `tvdata-rs`, Twelve Data REST, quotes, batch candles, and proxy prefetch
 - base domain types for assets, timeframes, and candles
 - deterministic indicator modules for EMA, ATR/RMA, RSI, ADX/DMI, MACD, VWAP, volume, candle shape, SMC, liquidity sweeps, order blocks, support/resistance, and regime classification
 - six-layer strategy evaluation with asset profile weights, confidence scoring, timeframe thresholds, session gating, trap guard, regime blocking, and ATR-based EW/TP/SL
@@ -44,7 +44,7 @@ Audit date: 2026-05-21.
 | Postgres foundation | Complete | migration `20260520000000_phase_0_4_foundation.sql`, repositories, storage integration tests |
 | Valkey foundation | Complete | key builder, TTL helpers, JSON helpers, dedupe, locks, pub/sub, rate-limit buckets, cache tests |
 | Observability | Complete | health/readiness model, heartbeat staleness, metrics endpoint and counters |
-| Market data ingestion | Complete | `MarketDataSource`, Binance HTTP, TradingView `tvdata-rs`, Yahoo chart fallback, proxy prefetch |
+| Market data ingestion | Complete | `MarketDataSource`, Binance HTTP, TradingView `tvdata-rs`, Twelve Data REST, proxy prefetch |
 | Indicator completion | Complete | deterministic modules and fixture/parity tests for Phase 1 indicator set |
 | Strategy engine | Complete | six-layer evaluation, confidence scoring, MTF thresholds, session/regime/trap blocking |
 | Scanner pipeline | Complete | ingestion/analysis/publishing split, bounded concurrency, Valkey snapshots, Postgres signal persistence, alert job enqueue |
@@ -81,14 +81,14 @@ Acceptance:
 
 Estimate: 2 hours. Status: **Complete**.
 
-Files: `src/data/retry.rs` (`with_retry`), `src/data/binance.rs`, `src/data/tradingview.rs`, `src/data/yahoo.rs`.
+Files: `src/data/retry.rs` (`with_retry`), `src/data/binance.rs`, `src/data/tradingview.rs`, `src/data/twelvedata.rs`.
 
 Tasks:
 
 - `with_retry(config, operation)` generic helper with exponential backoff and deterministic jitter.
 - `RetryConfig { max_retries, base_delay_ms, max_delay_ms }` added to `[data_sources.retry]` in TOML.
 - Permanent HTTP 4xx errors (except 429) are not retried to avoid unnecessary delay.
-- All three HTTP adapters (Binance, TradingView, Yahoo) wrap their fetch calls in `with_retry`.
+- All HTTP adapters (Binance, TradingView, Twelve Data) wrap their fetch calls in `with_retry`.
 
 Acceptance:
 
@@ -178,25 +178,25 @@ Estimate: 4–6 hours.
 
 Status: **Complete**. Implemented 2026-05-22.
 
-Goal: Allow each symbol to declare its preferred data source independently, enabling Forex/stocks symbols to use TradingView, crypto to use Binance, and proxy symbols (XAUUSD, IHSG, DXY) to use TradingView with Yahoo fallback. Replaces the global `ConfiguredMarketData` with `PerSymbolMarketData` which also runs source groups concurrently in `batch_candles` for better throughput.
+Goal: Allow each symbol to declare its preferred data source independently, enabling Forex/stocks symbols to use TradingView, crypto to use Binance, and proxy symbols (XAUUSD, IHSG, DXY) to use TradingView or Twelve Data. Replaces the global `ConfiguredMarketData` with `PerSymbolMarketData` which also runs source groups concurrently in `batch_candles` for better throughput.
 
 ### Changes
 
 - `SymbolConfig.data_source: Option<String>` — explicit override per symbol; defaults derived from `exchange` field.
-- `ProxySymbolEntry` — replaces flat `ProxySymbols` strings with structured `{ tradingview, yahoo, source }` fields.
+- `ProxySymbolEntry` — replaces flat `ProxySymbols` strings with structured `{ tradingview, twelvedata, source }` fields.
 - `PerSymbolMarketData` — new primary data source adapter:
   - Routing table built once at startup from config
-  - `candles()`: routes to configured adapter + Yahoo fallback if empty
-  - `batch_candles()`: groups by source, runs Binance/TV/Yahoo concurrently via `tokio::join!`, then merges
+  - `candles()`: routes to configured adapter + Twelve Data fallback if empty
+  - `batch_candles()`: groups by source, runs Binance/TV/Twelve Data concurrently via `tokio::join!`, then merges
 - `proxy.rs` updated to use `ProxySymbolEntry.symbol()` as request key
 - All scanner, supervisor, and CLI entry points migrated from `ConfiguredMarketData` to `PerSymbolMarketData`
-- `ProxySymbolEntry::from_yahoo()` helper for tests
+- `ProxySymbolEntry::from_twelvedata()` helper for tests
 
 ### Acceptance
 
 - `cargo test -- --test-threads=1` passes
 - `cargo run -- check-config` succeeds with new proxy_symbols TOML format
-- BTCUSDT routes to Binance; proxy symbols route to TradingView with Yahoo fallback
+- BTCUSDT routes to Binance; proxy symbols route to TradingView with Twelve Data fallback
 
 ## Delivery Principles
 
@@ -343,7 +343,7 @@ Tasks:
 
 - Expand `MarketDataSource` to support batch candles and quotes.
 - Implement Binance crypto OHLCV fetch.
-- Implement Yahoo Finance fallback for daily/proxy data.
+- Implement Twelve Data Finance fallback for daily/proxy data.
 - Implement TradingView adapter with `tvdata-rs` behind the internal `MarketDataSource` trait; keep auth optional and config/env-driven.
 - Keep `tail-fin-tradingview` as an optional later adapter for live streaming/Pine catalog tooling if `tvdata-rs` cannot satisfy a required feature.
 - Implement proxy prefetch once per cycle for XAUUSD/IHSG/DXY.

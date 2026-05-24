@@ -57,7 +57,7 @@ Each asset class has a distinct signal priority. Never apply one asset's logic t
 19. **CandleStream wraps WebSocket** — All WebSocket streaming logic must go through the `CandleStream` trait in `src/data/stream.rs`. Scanner, supervisor, and strategy modules must never import `tokio-tungstenite` directly. `BinanceWsStream` in `src/data/binance_ws.rs` is the only concrete WebSocket implementation.
 20. **Retry all external I/O** — Every HTTP and WebSocket operation must be wrapped in `data::retry::with_retry()`. Never let a single transient network failure propagate unretried to the scanner hot path. Permanent HTTP 4xx errors (except 429) bypass retry.
 21. **Rate-limit before Binance calls** — Acquire from `RateLimiter` before every Binance REST klines request. Config: `exchange.rate_limit_per_second`. The limiter lives in `src/data/retry.rs`; it is in-process and independent of the Valkey rate-limit bucket (which is for inter-process/distributed throttling).
-22. **Per-symbol data source routing** — Use `SymbolConfig.data_source` to assign a symbol to a specific adapter ("binance" | "tradingview" | "yahoo"). Proxy symbols use `ProxySymbolEntry` (see `[proxy_symbols.xauusd]` etc.) with separate TV/Yahoo symbol strings and a `source` preference. The `PerSymbolMarketData` adapter reads these at startup and builds a routing table — never hard-code symbol-to-source mappings in strategy or scanner code. When `data_source` is absent on a `SymbolConfig`, the adapter derives it from the `exchange` field (binance → "binance"; tradingview → "tradingview"; else global `data_sources.primary`).
+22. **Per-symbol data source routing** — Use `SymbolConfig.data_source` to assign a symbol to a specific adapter (`"binance"` | `"tradingview"` | `"twelvedata"`). Proxy symbols use `ProxySymbolEntry` (see `[proxy_symbols.xauusd]` etc.) with separate TradingView and Twelve Data symbol strings and a `source` preference. The `PerSymbolMarketData` adapter reads these at startup and builds a routing table — never hard-code symbol-to-source mappings in strategy or scanner code. When `data_source` is absent on a `SymbolConfig`, the adapter derives it from the `exchange` field (binance → `"binance"`; tradingview → `"tradingview"`; else global `data_sources.primary`).
 
 ## Coding Conventions
 
@@ -90,7 +90,7 @@ src/
 ├── app/             # 24/7 service kernel, worker supervision, graceful shutdown
 ├── api/             # Axum routes, request/response DTOs, auth middleware
 ├── config/          # TOML config + asset profiles + defaults
-├── data/            # Data fetchers (TradingView, Binance, Yahoo Finance, proxy)
+├── data/            # Data fetchers (TradingView, Binance, Twelve Data, proxy)
 ├── storage/         # Postgres repositories, migrations, durable models
 ├── cache/           # Valkey client, hot state, pub/sub, distributed locks
 ├── indicators/      # One file per indicator system
@@ -134,7 +134,7 @@ All distance calculations (EW, TP, SL, trap thresholds) are expressed as ATR mul
 
 ### Proxy Symbols Are Fetched Once Per Cycle
 
-XAUUSD and IDX:COMPOSITE data should be fetched once at the start of each scan cycle and shared across all symbols that need them. Do not re-fetch per symbol. Prefer the internal Yahoo chart fallback for proxy symbols when TradingView auth is unavailable.
+XAUUSD and IDX:COMPOSITE data should be fetched once at the start of each scan cycle and shared across all symbols that need them. Do not re-fetch per symbol. Use `source = "tradingview"` when a valid TradingView session is available; use `source = "twelvedata"` with a static API key as the stable alternative.
 
 ### TradingView Data Source
 
@@ -153,19 +153,26 @@ session_signature_env = "TRADINGVIEW_SESSIONID_SIGN"
 device_token_env = "TRADINGVIEW_DEVICE_T"
 ```
 
-### Yahoo Finance Chart Fallback
+### Twelve Data REST Adapter
 
-The internal Yahoo chart adapter is the fallback/supplementary data source. No API key required.
+Twelve Data is the stable alternative data source for proxy symbols (XAUUSD, DXY, IHSG) when TradingView session cookies are unavailable or expired. It requires a static API key — no browser session needed.
 
-```rust
-let source = YahooDataSource::new(config.data_sources.yahoo.clone());
-let candles = source.candles("GC=F", Timeframe::D1, 250).await?;
+```toml
+[data_sources.twelvedata]
+enabled     = true
+base_url    = "https://api.twelvedata.com"
+api_key_env = "TWELVE_DATA_API_KEY"
+
+[proxy_symbols.xauusd]
+tradingview = "OANDA:XAUUSD"
+twelvedata  = "XAU/USD"
+source      = "twelvedata"   # or "tradingview"
 ```
 
-- Supports daily/weekly/monthly intervals (not intraday sub-daily)
-- Good for: US Stocks, Forex pairs, ETFs, proxy symbols (GC=F for gold, ^JKSE for IHSG, DX-Y.NYB for DXY)
-- Not suitable for: real-time crypto (use Binance), intraday M1/M5/M15 (use TradingView WebSocket)
-- Data source priority per asset: Binance (crypto) → TradingView via `tvdata-rs` (all/intraday) → Yahoo chart fallback
+- Supports all timeframes M1 through Mn1 (intraday included, unlike the removed Yahoo adapter which was D1-only).
+- Free tier: 800 API credits/day. Set `scan_interval_secs = 300` for free tier with 3 proxy symbols.
+- Implementation: `src/data/twelvedata.rs` (`TwelveDataDataSource`).
+- Data source priority per asset: Binance (crypto) → TradingView via `tvdata-rs` (all/intraday) → Twelve Data (proxy symbols, static API key).
 
 ### Trap Guard Can Block Signals
 
@@ -484,8 +491,8 @@ slippage_bps = 5
 | `redis` or `fred` | Redis-compatible Valkey client |
 | `tvdata-rs` | Primary unofficial TradingView data fetching adapter |
 | `tail-fin-tradingview` | Optional TradingView live streaming/Pine/catalog tooling adapter when needed |
-| `reqwest` | HTTP client for Binance market data, Yahoo chart fallback, and Telegram Bot API |
-| `binance-sdk` | Optional future Binance account/trading SDK; do not bypass `Exchange` trait |
+| `reqwest` | HTTP client for Binance market data, Twelve Data REST, and Telegram Bot API |
+| `binance-sdk` | Official Binance SDK (spot features); wraps Binance REST for klines (Phase 1.5+) and will power signed trading endpoints in Phase 2. Never bypass the `Exchange` trait. |
 | `ta` | Optional reference crate for standard indicators; current indicator hot path is implemented internally |
 | `redis` | Redis-compatible Valkey client |
 | `serde` + `toml` | Configuration deserialization |

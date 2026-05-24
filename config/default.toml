@@ -114,17 +114,17 @@ max_retries = 1
 base_delay_ms = 500
 max_delay_ms = 10000
 
-[data_sources.yahoo]
-enabled = false
-base_url = "https://query1.finance.yahoo.com"
-adjust = true
-
 [data_sources.tradingview]
 enabled = true
 auth_token_env = "TRADINGVIEW_AUTH_TOKEN"
 session_id_env = "TRADINGVIEW_SESSION_ID"
 session_signature_env = "TRADINGVIEW_SESSIONID_SIGN"
 device_token_env = "TRADINGVIEW_DEVICE_T"
+
+[data_sources.twelvedata]
+enabled = false
+base_url = "https://api.twelvedata.com"
+api_key_env = "TWELVE_DATA_API_KEY"
 
 [exchange]
 platform = "paper"
@@ -242,15 +242,15 @@ timeframes = ["1h", "4h", "1d"]
 
 [proxy_symbols.xauusd]
 tradingview = "OANDA:XAUUSD"
-yahoo = "GC=F"
-source = "tradingview"
+twelvedata  = "XAU/USD"
+source      = "tradingview"   # switch to "twelvedata" when TradingView session expires
 
-[proxy_symbols.IHSG]
+[proxy_symbols.ihsg]
 tradingview = "IDX:COMPOSITE"
-yahoo = "^JKSE"
-source = "tradingview"
+twelvedata  = "IDXSMC.COM"
+source      = "tradingview"
 
 [proxy_symbols.dxy]
 tradingview = "TVC:DXY"
-yahoo = "DX-Y.NYB"
-source = "tradingview"
+twelvedata  = "DXY"           # verify with: curl "https://api.twelvedata.com/symbol_search?symbol=DXY&apikey=YOUR_KEY"
+source      = "tradingview"

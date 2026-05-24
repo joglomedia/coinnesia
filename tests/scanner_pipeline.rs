@@ -79,9 +79,9 @@ fn test_cache_config() -> Option<CacheConfig> {
 async fn scanner_prefetches_proxy_data_once_then_scans_configured_symbols() {
     let mut config = coinnesia::config::AppConfig::from_default_toml().expect("config parses");
     config.runtime.max_symbol_tasks = 1;
-    config.proxy_symbols.xauusd = coinnesia::config::ProxySymbolEntry::from_yahoo("PAXGUSDT");
-    config.proxy_symbols.ihsg = coinnesia::config::ProxySymbolEntry::from_yahoo("BTCUSDT");
-    config.proxy_symbols.dxy = coinnesia::config::ProxySymbolEntry::from_yahoo("ETHUSDT");
+    config.proxy_symbols.xauusd = coinnesia::config::ProxySymbolEntry::from_binance("PAXGUSDT");
+    config.proxy_symbols.ihsg = coinnesia::config::ProxySymbolEntry::from_binance("BTCUSDT");
+    config.proxy_symbols.dxy = coinnesia::config::ProxySymbolEntry::from_binance("ETHUSDT");
 
     let calls = Arc::new(AtomicUsize::new(0));
     let scanner = Scanner::with_data_source(
@@ -107,9 +107,9 @@ async fn scanner_caches_snapshots_when_valkey_url_is_set() {
 
     let mut config = coinnesia::config::AppConfig::from_default_toml().expect("config parses");
     config.cache = cache_config;
-    config.proxy_symbols.xauusd = coinnesia::config::ProxySymbolEntry::from_yahoo("PAXGUSDT");
-    config.proxy_symbols.ihsg = coinnesia::config::ProxySymbolEntry::from_yahoo("BTCUSDT");
-    config.proxy_symbols.dxy = coinnesia::config::ProxySymbolEntry::from_yahoo("ETHUSDT");
+    config.proxy_symbols.xauusd = coinnesia::config::ProxySymbolEntry::from_binance("PAXGUSDT");
+    config.proxy_symbols.ihsg = coinnesia::config::ProxySymbolEntry::from_binance("BTCUSDT");
+    config.proxy_symbols.dxy = coinnesia::config::ProxySymbolEntry::from_binance("ETHUSDT");
 
     let cache = Cache::connect_optional(&config.cache)
         .await
@@ -157,9 +157,9 @@ async fn scanner_persists_signal_evaluations_and_alert_jobs_when_database_url_is
     let symbol = format!("TEST{}USDT", Uuid::new_v4().simple());
     config.symbols[0].symbol = symbol.clone();
     config.symbols.truncate(1);
-    config.proxy_symbols.xauusd = coinnesia::config::ProxySymbolEntry::from_yahoo("PAXGUSDT");
-    config.proxy_symbols.ihsg = coinnesia::config::ProxySymbolEntry::from_yahoo("BTCUSDT");
-    config.proxy_symbols.dxy = coinnesia::config::ProxySymbolEntry::from_yahoo("ETHUSDT");
+    config.proxy_symbols.xauusd = coinnesia::config::ProxySymbolEntry::from_binance("PAXGUSDT");
+    config.proxy_symbols.ihsg = coinnesia::config::ProxySymbolEntry::from_binance("BTCUSDT");
+    config.proxy_symbols.dxy = coinnesia::config::ProxySymbolEntry::from_binance("ETHUSDT");
 
     let db = Db::connect_optional(&config.database)
         .await

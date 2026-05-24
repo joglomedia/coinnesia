@@ -14,9 +14,8 @@ pub struct ProxySnapshot {
 /// Fetch proxy symbols once per scan cycle.
 ///
 /// Uses each `ProxySymbolEntry.symbol()` as the request key — this returns the
-/// preferred-source symbol (e.g. "OANDA:XAUUSD" for TradingView, "GC=F" for Yahoo).
-/// When `source` is `PerSymbolMarketData`, routing and Yahoo fallback are handled
-/// transparently inside the adapter.
+/// preferred-source symbol (e.g. "OANDA:XAUUSD" for TradingView, "XAU/USD" for Twelve Data).
+/// Routing is handled transparently inside `PerSymbolMarketData`.
 pub async fn fetch_once_per_cycle(
     source: &dyn MarketDataSource,
     proxies: &ProxySymbols,

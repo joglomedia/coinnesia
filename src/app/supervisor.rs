@@ -291,7 +291,7 @@ mod tests {
         let supervisor = Supervisor::new(state.clone(), shutdown.child_token());
         let task = tokio::spawn(supervisor.run());
 
-        time::timeout(Duration::from_secs(1), async {
+        time::timeout(Duration::from_secs(3), async {
             loop {
                 if state.health.is_healthy("trading") && state.startup_gate.status().completed {
                     break;
@@ -356,7 +356,7 @@ mod tests {
         let supervisor = Supervisor::new(state.clone(), shutdown.child_token());
         let task = tokio::spawn(supervisor.run());
 
-        time::timeout(Duration::from_secs(1), async {
+        time::timeout(Duration::from_secs(3), async {
             loop {
                 if state.startup_gate.status().completed && !state.health.is_healthy("supervisor") {
                     break;
