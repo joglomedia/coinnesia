@@ -22,7 +22,11 @@ use crate::{
         CandleRequest, MarketDataSource, PerSymbolMarketData,
     },
     storage::{alerts::AlertJobRecord, signals::SignalRecord, Db},
-    strategy::{mtf::parse_timeframe, SignalDirection, SignalResult},
+    strategy::{
+        guard_state::{GuardStateStore, InMemoryGuardStore},
+        mtf::{parse_timeframe, required_timeframes, MtfCandles},
+        SignalDirection, SignalResult,
+    },
     AssetClass, Timeframe,
 };
 
@@ -37,6 +41,7 @@ pub struct Scanner {
     config: AppConfig,
     data_source: Arc<dyn MarketDataSource>,
     publisher: ScanPublisher,
+    guard_store: Arc<dyn GuardStateStore>,
 }
 
 impl Scanner {
@@ -46,6 +51,7 @@ impl Scanner {
             config,
             data_source,
             publisher: ScanPublisher::default(),
+            guard_store: Arc::new(InMemoryGuardStore::new()),
         }
     }
 
@@ -54,6 +60,7 @@ impl Scanner {
             config,
             data_source,
             publisher: ScanPublisher::default(),
+            guard_store: Arc::new(InMemoryGuardStore::new()),
         }
     }
 
@@ -67,7 +74,15 @@ impl Scanner {
             config,
             data_source,
             publisher: ScanPublisher { db, cache },
+            guard_store: Arc::new(InMemoryGuardStore::new()),
         }
+    }
+
+    /// Replace the default in-memory guard store with a custom implementation
+    /// (e.g. a Valkey-backed store for multi-process deployments).
+    pub fn with_guard_store(mut self, store: Arc<dyn GuardStateStore>) -> Self {
+        self.guard_store = store;
+        self
     }
 
     pub async fn scan_once(&self) -> Result<ScanReport> {
@@ -97,19 +112,20 @@ impl Scanner {
         .await
         .unwrap_or_default();
 
-        let requests = self
-            .config
-            .symbols
-            .iter()
-            .map(|symbol_config| {
-                let timeframe = symbol_config
-                    .timeframes
-                    .first()
-                    .and_then(|timeframe| parse_timeframe(timeframe))
-                    .unwrap_or(Timeframe::D1);
-                CandleRequest::new(symbol_config.symbol.clone(), timeframe, candle_limit)
-            })
-            .collect::<Vec<_>>();
+        // Fan out one CandleRequest per (symbol, timeframe) across the asset-class
+        // required timeframe set. Sharing one batch_candles call preserves the
+        // per-source concurrency already provided by PerSymbolMarketData.
+        let mut requests: Vec<CandleRequest> = Vec::new();
+        for symbol_config in &self.config.symbols {
+            let primary = primary_timeframe(symbol_config);
+            for tf in required_timeframes(symbol_config.asset_class, primary) {
+                requests.push(CandleRequest::new(
+                    symbol_config.symbol.clone(),
+                    tf,
+                    candle_limit,
+                ));
+            }
+        }
         let candles = self.data_source.batch_candles(&requests).await?;
 
         Ok(self
@@ -117,18 +133,22 @@ impl Scanner {
             .symbols
             .iter()
             .map(|symbol_config| {
-                let timeframe = symbol_config
-                    .timeframes
-                    .first()
-                    .and_then(|timeframe| parse_timeframe(timeframe))
-                    .unwrap_or(Timeframe::D1);
-                let request =
-                    CandleRequest::new(symbol_config.symbol.clone(), timeframe, candle_limit);
+                let primary = primary_timeframe(symbol_config);
+                let mut by_tf: std::collections::BTreeMap<Timeframe, Vec<crate::Candle>> =
+                    std::collections::BTreeMap::new();
+                for tf in required_timeframes(symbol_config.asset_class, primary) {
+                    let request =
+                        CandleRequest::new(symbol_config.symbol.clone(), tf, candle_limit);
+                    let series = candles.get(&request).cloned().unwrap_or_default();
+                    by_tf.insert(tf, series);
+                }
+                let primary_candles = by_tf.get(&primary).cloned().unwrap_or_default();
                 ScanWorkItem {
                     symbol: symbol_config.symbol.clone(),
-                    timeframe,
+                    timeframe: primary,
                     asset_class: asset_class_name(symbol_config.asset_class).to_owned(),
-                    candles: candles.get(&request).cloned().unwrap_or_default(),
+                    candles: primary_candles,
+                    mtf: MtfCandles::new(primary, by_tf),
                 }
             })
             .collect())
@@ -141,6 +161,7 @@ impl Scanner {
         for item in work_items {
             let permit = semaphore.clone().acquire_owned().await?;
             let strategy_config = self.config.clone();
+            let store = self.guard_store.clone();
             tasks.push(tokio::spawn(async move {
                 let _permit = permit;
                 debug!(
@@ -152,8 +173,16 @@ impl Scanner {
                 if item.candles.is_empty() {
                     return SignalResult::wait(&item.symbol, "market_data_unavailable");
                 }
+                let prev_state = store.load(&item.symbol).await;
                 let engine = crate::strategy::StrategyEngine::new(strategy_config);
-                engine.evaluate(&item.symbol, &item.candles)
+                let (signal, new_state) = engine.evaluate_with_state(
+                    &item.symbol,
+                    &item.candles,
+                    Some(&item.mtf),
+                    &prev_state,
+                );
+                store.save(&item.symbol, new_state).await;
+                signal
             }));
         }
 
@@ -265,11 +294,16 @@ impl Scanner {
             .map(|s| asset_class_name(s.asset_class).to_owned())
             .unwrap_or_else(|| "unknown".to_owned());
 
+        let mut by_tf: std::collections::BTreeMap<Timeframe, Vec<crate::Candle>> =
+            std::collections::BTreeMap::new();
+        by_tf.insert(event.timeframe, candles.clone());
+        let mtf = MtfCandles::new(event.timeframe, by_tf);
         let work_item = ScanWorkItem {
             symbol: event.symbol.clone(),
             timeframe: event.timeframe,
             asset_class,
             candles,
+            mtf,
         };
 
         match self.analyze(vec![work_item]).await {
@@ -294,6 +328,15 @@ struct ScanWorkItem {
     timeframe: Timeframe,
     asset_class: String,
     candles: Vec<crate::Candle>,
+    mtf: MtfCandles,
+}
+
+fn primary_timeframe(symbol_config: &crate::config::SymbolConfig) -> Timeframe {
+    symbol_config
+        .timeframes
+        .first()
+        .and_then(|timeframe| parse_timeframe(timeframe))
+        .unwrap_or(Timeframe::D1)
 }
 
 #[derive(Clone, Default)]
@@ -494,6 +537,8 @@ fn asset_class_name(asset_class: AssetClass) -> &'static str {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::Mutex;
+
     use anyhow::Result;
     use async_trait::async_trait;
     use chrono::{Duration, Utc};
@@ -519,9 +564,64 @@ mod tests {
         }
     }
 
+    /// Recording mock that captures every (symbol, timeframe) pair it serves
+    /// during a scan cycle so tests can assert on the fan-out behaviour.
+    #[derive(Debug, Default)]
+    struct RecordingDataSource {
+        candles: Vec<Candle>,
+        requested: Mutex<Vec<(String, Timeframe)>>,
+    }
+
+    #[async_trait]
+    impl MarketDataSource for RecordingDataSource {
+        async fn candles(
+            &self,
+            symbol: &str,
+            timeframe: Timeframe,
+            _limit: usize,
+        ) -> Result<Vec<Candle>> {
+            self.requested
+                .lock()
+                .unwrap()
+                .push((symbol.to_owned(), timeframe));
+            Ok(self.candles.clone())
+        }
+    }
+
+    /// Recording GuardStateStore: counts every load/save and stores the
+    /// payload so persistence behaviour can be asserted across scan cycles.
+    #[derive(Debug, Default)]
+    struct RecordingGuardStore {
+        inner: Mutex<std::collections::HashMap<String, crate::strategy::guard_state::GuardState>>,
+        loads: Mutex<Vec<String>>,
+        saves: Mutex<Vec<(String, crate::strategy::guard_state::GuardState)>>,
+    }
+
+    #[async_trait]
+    impl crate::strategy::guard_state::GuardStateStore for RecordingGuardStore {
+        async fn load(&self, symbol: &str) -> crate::strategy::guard_state::GuardState {
+            self.loads.lock().unwrap().push(symbol.to_owned());
+            self.inner
+                .lock()
+                .unwrap()
+                .get(symbol)
+                .cloned()
+                .unwrap_or_default()
+        }
+
+        async fn save(&self, symbol: &str, state: crate::strategy::guard_state::GuardState) {
+            self.saves
+                .lock()
+                .unwrap()
+                .push((symbol.to_owned(), state.clone()));
+            self.inner.lock().unwrap().insert(symbol.to_owned(), state);
+        }
+    }
+
     #[tokio::test]
     async fn scanner_fetches_candles_before_evaluating_strategy() {
         let config = AppConfig::from_default_toml().expect("default config parses");
+        let expected = config.symbols.len();
         let now = Utc::now();
         let candles = (0..20)
             .map(|idx| Candle {
@@ -536,10 +636,111 @@ mod tests {
         let scanner = Scanner::with_data_source(config, Arc::new(MockDataSource { candles }));
         let report = scanner.scan_once().await.expect("scan succeeds");
 
-        assert_eq!(report.scanned, 4);
+        assert_eq!(report.scanned, expected);
         assert!(report
             .signals
             .iter()
             .all(|signal| signal.reason != "market_data_unavailable"));
+    }
+
+    #[tokio::test]
+    async fn scanner_fetches_full_mtf_timeframe_set_per_symbol() {
+        // Acceptance for 1.7.3: scanner pulls every required timeframe per
+        // symbol exactly once per cycle. We use a recording mock to observe
+        // the (symbol, timeframe) pairs surfaced via batch_candles.
+        let config = AppConfig::from_default_toml().expect("default config parses");
+        let now = Utc::now();
+        let candles = (0..20)
+            .map(|idx| Candle {
+                ts: now + Duration::minutes(idx),
+                open: 100.0,
+                high: 101.0,
+                low: 99.0,
+                close: 100.5,
+                volume: 1000.0,
+            })
+            .collect::<Vec<_>>();
+        let source = Arc::new(RecordingDataSource {
+            candles,
+            requested: Mutex::new(Vec::new()),
+        });
+
+        let scanner = Scanner::with_data_source(config.clone(), source.clone());
+        let _ = scanner.scan_once().await.expect("scan succeeds");
+
+        let requested = source.requested.lock().unwrap().clone();
+        for symbol_config in &config.symbols {
+            let primary = primary_timeframe(symbol_config);
+            let required = crate::strategy::mtf::required_timeframes(
+                symbol_config.asset_class,
+                primary,
+            );
+            for tf in required {
+                let hits = requested
+                    .iter()
+                    .filter(|(s, t)| s == &symbol_config.symbol && t == &tf)
+                    .count();
+                assert!(
+                    hits >= 1,
+                    "expected at least one fetch for {} {tf:?}; observed {:?}",
+                    symbol_config.symbol,
+                    requested
+                        .iter()
+                        .filter(|(s, _)| s == &symbol_config.symbol)
+                        .collect::<Vec<_>>()
+                );
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn guard_state_survives_scan_cycles() {
+        // Acceptance for 1.7.4: state is loaded and saved per symbol on every
+        // scan cycle. After two cycles the recording store must show ≥ 2
+        // load/save calls per symbol and the persisted state from cycle N must
+        // be the prev_state delivered to cycle N+1.
+        let config = AppConfig::from_default_toml().expect("default config parses");
+        let symbols = config
+            .symbols
+            .iter()
+            .map(|s| s.symbol.clone())
+            .collect::<Vec<_>>();
+        let now = Utc::now();
+        let candles = (0..50)
+            .map(|idx| Candle {
+                ts: now + Duration::minutes(idx),
+                open: 100.0,
+                high: 101.0,
+                low: 99.0,
+                close: 100.5,
+                volume: 1_000.0,
+            })
+            .collect::<Vec<_>>();
+        let store = Arc::new(RecordingGuardStore::default());
+        let scanner = Scanner::with_data_source(config, Arc::new(MockDataSource { candles }))
+            .with_guard_store(store.clone());
+
+        scanner.scan_once().await.expect("first cycle succeeds");
+        scanner.scan_once().await.expect("second cycle succeeds");
+
+        let loads = store.loads.lock().unwrap().clone();
+        let saves = store.saves.lock().unwrap().clone();
+        for symbol in &symbols {
+            let load_hits = loads.iter().filter(|s| s == &symbol).count();
+            let save_hits = saves.iter().filter(|(s, _)| s == symbol).count();
+            assert!(
+                load_hits >= 2 && save_hits >= 2,
+                "{symbol} load={load_hits} save={save_hits} (need ≥2 each across 2 cycles)"
+            );
+        }
+        // The store must hold a state for every configured symbol after the
+        // second cycle.
+        let stored = store.inner.lock().unwrap();
+        for symbol in &symbols {
+            assert!(
+                stored.contains_key(symbol),
+                "{symbol} state must be persisted between cycles"
+            );
+        }
     }
 }

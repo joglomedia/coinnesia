@@ -17,7 +17,7 @@ pub struct PriceZone {
 pub fn detect_zones(
     candles: &[Candle],
     lookback: usize,
-    tolerance: f64,
+    cluster_tolerance: f64,
     max_zones: usize,
 ) -> Vec<PriceZone> {
     if candles.len() < 5 || max_zones == 0 {
@@ -26,16 +26,16 @@ pub fn detect_zones(
 
     let start = candles.len().saturating_sub(lookback);
     let slice = &candles[start..];
-    let tolerance = tolerance.max(f64::EPSILON);
+    let cluster_tolerance = cluster_tolerance.max(f64::EPSILON);
     let mut zones = Vec::new();
 
     for idx in 2..slice.len().saturating_sub(2) {
         let candle = &slice[idx];
         if is_pivot_low(slice, idx) {
-            add_zone(&mut zones, ZoneKind::Support, candle.low, tolerance);
+            add_zone(&mut zones, ZoneKind::Support, candle.low, cluster_tolerance);
         }
         if is_pivot_high(slice, idx) {
-            add_zone(&mut zones, ZoneKind::Resistance, candle.high, tolerance);
+            add_zone(&mut zones, ZoneKind::Resistance, candle.high, cluster_tolerance);
         }
     }
 
@@ -60,18 +60,22 @@ fn is_pivot_low(candles: &[Candle], idx: usize) -> bool {
         .all(|(offset, candle)| offset == 2 || value <= candle.low)
 }
 
-fn add_zone(zones: &mut Vec<PriceZone>, kind: ZoneKind, price: f64, tolerance: f64) {
+fn add_zone(zones: &mut Vec<PriceZone>, kind: ZoneKind, price: f64, cluster_tolerance: f64) {
     if let Some(zone) = zones.iter_mut().find(|zone| {
-        zone.kind == kind && price >= zone.low - tolerance && price <= zone.high + tolerance
+        zone.kind == kind
+            && price >= zone.low - cluster_tolerance
+            && price <= zone.high + cluster_tolerance
     }) {
-        zone.low = zone.low.min(price - tolerance);
-        zone.high = zone.high.max(price + tolerance);
+        // Grow the zone by the actual pivot price, not by the cluster tolerance.
+        // A single pivot has zero width; clustered pivots span only the observed extremes.
+        zone.low = zone.low.min(price);
+        zone.high = zone.high.max(price);
         zone.strength += 1.0;
     } else {
         zones.push(PriceZone {
             kind,
-            low: price - tolerance,
-            high: price + tolerance,
+            low: price,
+            high: price,
             strength: 1.0,
         });
     }

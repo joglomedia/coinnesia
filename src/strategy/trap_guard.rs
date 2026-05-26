@@ -127,12 +127,9 @@ mod tests {
             close: 102.0,
             volume: 4_000.0,
         });
-        let config = TrapGuardConfig {
-            trap_score_threshold: 60.0,
-            trap_volume_z: 2.0,
-            wick_trap_atr: 0.7,
-            cooldown_bars: 3,
-        };
+        let config = crate::config::AppConfig::from_default_toml()
+            .expect("default config parses")
+            .trap_guard;
 
         assert!(evaluate_trap_guard(&candles, &config, SignalDirection::Long).blocks_signal);
     }

@@ -181,7 +181,11 @@ mod tests {
 
         assert_eq!(response.status(), StatusCode::OK);
         let body = json_response(response).await;
-        assert_eq!(body["symbols"], 4);
+        let expected_symbols = crate::config::AppConfig::from_default_toml()
+            .expect("default config parses")
+            .symbols
+            .len();
+        assert_eq!(body["symbols"], expected_symbols);
         assert_eq!(body["exchange"], "paper");
         assert!(body.get("auth_token_env").is_none());
         assert!(body.get("api_key").is_none());

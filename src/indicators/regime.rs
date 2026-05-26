@@ -19,8 +19,11 @@ pub enum MarketRegime {
 }
 
 impl MarketRegime {
+    /// Pine semantics: only `Shock` is a hard freeze.
+    /// `Sideways` is permitted at the layer level so scoring + directional gap
+    /// can decide; counter-trend chop filtering happens upstream when needed.
     pub const fn allows_signals(self) -> bool {
-        matches!(self, Self::TrendExpansion)
+        !matches!(self, Self::Shock)
     }
 }
 

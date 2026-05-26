@@ -11,6 +11,8 @@ adx_smoothing = 14
 macd_fast = 12
 macd_slow = 26
 macd_signal = 9
+ob_displacement_atr = 0.65
+sr_cluster_atr = 0.35
 
 [strategy]
 min_directional_gap = 10.0
@@ -20,6 +22,12 @@ min_confidence_4h = 64.0
 min_confidence_1d = 58.0
 structure_lookback = 18
 min_structure_score = 60.0
+
+[strategy.mtf]
+consensus_score_gap = 12.0
+flip_confirm_bars = 2
+micro_trend_bars = 5
+micro_trend_min_bars = 3
 
 [entry_plan]
 swing_lookback = 24
@@ -47,6 +55,14 @@ trap_score_threshold = 60.0
 trap_volume_z = 2.0
 wick_trap_atr = 0.70
 cooldown_bars = 3
+cooldown_band_low_bars = 4
+cooldown_band_mid_bars = 6
+cooldown_band_high_bars = 7
+cooldown_band_mid_score = 75.0
+cooldown_band_high_score = 90.0
+shock_freeze_bars = 5
+deep_reclaim_bars = 3
+min_swing_distance_atr = 0.45
 
 [session]
 timezone = "Asia/Jakarta"
@@ -219,12 +235,12 @@ exchange = "binance"
 data_source = "binance"
 timeframes = ["15m", "1h", "4h", "1d"]
 
-[[symbols]]
-symbol = "ETHUSDT"
-asset_class = "btc"
-exchange = "binance"
-data_source = "binance"
-timeframes = ["15m", "1h", "4h", "1d"]
+#[[symbols]]
+#symbol = "ETHUSDT"
+#asset_class = "btc"
+#exchange = "binance"
+#data_source = "binance"
+#timeframes = ["15m", "1h", "4h", "1d"]
 
 [[symbols]]
 symbol = "PAXGUSDT"
@@ -234,18 +250,11 @@ data_source = "binance"
 timeframes = ["15m", "1h", "4h", "1d"]
 
 [[symbols]]
-symbol = "XAUUSD"
-asset_class = "gold"
-exchange = "binance"
-data_source = "tradingview"
-timeframes = ["15m", "1h", "4h", "1d"]
-
-[[symbols]]
-symbol = "IHSG"
+symbol = "IDX:COMPOSITE"
 asset_class = "stocks_idx"
 exchange = ""
 data_source = "tradingview"
-timeframes = ["1h", "4h", "1d"]
+timeframes = ["15m", "1h", "4h", "1d"]
 
 [proxy_symbols.xauusd]
 tradingview = "OANDA:XAUUSD"

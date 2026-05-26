@@ -55,6 +55,18 @@ pub struct IndicatorConfig {
     pub macd_fast: usize,
     pub macd_slow: usize,
     pub macd_signal: usize,
+    #[serde(default = "default_ob_displacement_atr")]
+    pub ob_displacement_atr: f64,
+    #[serde(default = "default_sr_cluster_atr")]
+    pub sr_cluster_atr: f64,
+}
+
+fn default_ob_displacement_atr() -> f64 {
+    0.65
+}
+
+fn default_sr_cluster_atr() -> f64 {
+    0.35
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -66,6 +78,52 @@ pub struct StrategyConfig {
     pub min_confidence_1d: f64,
     pub structure_lookback: usize,
     pub min_structure_score: f64,
+    #[serde(default)]
+    pub mtf: MtfConfig,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MtfConfig {
+    /// V61.7 consensus gap threshold — block emission when |long_votes − short_votes|
+    /// across M1/M5/M15 exceeds this score on the opposite side.
+    #[serde(default = "default_consensus_score_gap")]
+    pub consensus_score_gap: f64,
+    /// V61.7 trend-flip confirm bars.
+    #[serde(default = "default_flip_confirm_bars")]
+    pub flip_confirm_bars: usize,
+    /// V61.6 microTrend lookback (bars on lowest TF).
+    #[serde(default = "default_micro_trend_bars")]
+    pub micro_trend_bars: usize,
+    /// V61.6 minimum directional bars within micro_trend_bars to trigger override.
+    #[serde(default = "default_micro_trend_min_bars")]
+    pub micro_trend_min_bars: usize,
+}
+
+impl Default for MtfConfig {
+    fn default() -> Self {
+        Self {
+            consensus_score_gap: default_consensus_score_gap(),
+            flip_confirm_bars: default_flip_confirm_bars(),
+            micro_trend_bars: default_micro_trend_bars(),
+            micro_trend_min_bars: default_micro_trend_min_bars(),
+        }
+    }
+}
+
+fn default_consensus_score_gap() -> f64 {
+    12.0
+}
+
+fn default_flip_confirm_bars() -> usize {
+    2
+}
+
+fn default_micro_trend_bars() -> usize {
+    5
+}
+
+fn default_micro_trend_min_bars() -> usize {
+    3
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -97,6 +155,54 @@ pub struct TrapGuardConfig {
     pub trap_volume_z: f64,
     pub wick_trap_atr: f64,
     pub cooldown_bars: usize,
+    #[serde(default = "default_cooldown_band_low_bars")]
+    pub cooldown_band_low_bars: usize,
+    #[serde(default = "default_cooldown_band_mid_bars")]
+    pub cooldown_band_mid_bars: usize,
+    #[serde(default = "default_cooldown_band_high_bars")]
+    pub cooldown_band_high_bars: usize,
+    #[serde(default = "default_cooldown_band_mid_score")]
+    pub cooldown_band_mid_score: f64,
+    #[serde(default = "default_cooldown_band_high_score")]
+    pub cooldown_band_high_score: f64,
+    #[serde(default = "default_shock_freeze_bars")]
+    pub shock_freeze_bars: usize,
+    #[serde(default = "default_deep_reclaim_bars")]
+    pub deep_reclaim_bars: usize,
+    #[serde(default = "default_min_swing_distance_atr")]
+    pub min_swing_distance_atr: f64,
+}
+
+fn default_cooldown_band_low_bars() -> usize {
+    4
+}
+
+fn default_cooldown_band_mid_bars() -> usize {
+    6
+}
+
+fn default_cooldown_band_high_bars() -> usize {
+    7
+}
+
+fn default_cooldown_band_mid_score() -> f64 {
+    75.0
+}
+
+fn default_cooldown_band_high_score() -> f64 {
+    90.0
+}
+
+fn default_shock_freeze_bars() -> usize {
+    5
+}
+
+fn default_deep_reclaim_bars() -> usize {
+    3
+}
+
+fn default_min_swing_distance_atr() -> f64 {
+    0.45
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

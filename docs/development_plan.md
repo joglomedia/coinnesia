@@ -172,6 +172,7 @@ candle_buffer_size = 500
 
 Updated docs: `AGENTS.md` (rules 18–21), `docs/architecture_audit.md` (gaps + HFT capabilities), `docs/requirements.md` (streaming section), `docs/manual.md` (WebSocket streaming configuration guide).
 
+
 ## Phase 1.6 — Per-Symbol Data Source Routing
 
 Estimate: 4–6 hours.
@@ -179,6 +180,30 @@ Estimate: 4–6 hours.
 Status: **Complete**. Implemented 2026-05-22.
 
 Goal: Allow each symbol to declare its preferred data source independently, enabling Forex/stocks symbols to use TradingView, crypto to use Binance, and proxy symbols (XAUUSD, IHSG, DXY) to use TradingView or Twelve Data. Replaces the global `ConfiguredMarketData` with `PerSymbolMarketData` which also runs source groups concurrently in `batch_candles` for better throughput.
+
+## Phase 1.7 — Pine Script Parity & Panel Report
+
+Estimate: 80–110 hours.
+
+Status: **Planned**. Audit date 2026-05-25. Detailed plan in `docs/phase1_pine_parity_plan.md`.
+
+Goal: bring scanner/strategy output to functional parity with the TradingView Pine reference panels for all five asset classes. The 2026-05-25 audit found that indicator math (RSI/ATR/ADX/EMA/MACD) matches Pine but the higher-level composition is missing most of the V61.4 → V62.0 protective stack, the MTF feed, asset-specific evaluator branching, proxy snapshot plumbing, and the full panel report data structure. Current panel parity is ~15–20%.
+
+Headline sub-phases (full breakdown in the parity plan doc):
+
+- 1.7.1 Core strategy bug fixes (regime gate, RSI/MACD layers, EW1 clamp, OB body-ratio, zone tolerance).
+- 1.7.2 Session & VWAP boundary alignment to Pine WIB cutoffs.
+- 1.7.3 Multi-timeframe data pipeline (M1/M5/M15/H1/H4/D1/W1/MN) + consensus + microTrend.
+- 1.7.4 Stateful guard counters (trap cooldown, shock freeze, deep reclaim, SMC trend state).
+- 1.7.5 EW/SL/TP engine rewrite — swing/VWAP/EMA anchored, session-reachable, liquidity-capped, flow-adaptive, probability-scored.
+- 1.7.6 Trap guard & V61.8 flow engine.
+- 1.7.7 New indicators: CMF, OBV, RVOL, HTF bias, relative-strength.
+- 1.7.8 Asset-class evaluator branching (Gold proxy bias, Forex HTF, IDX RVOL/CMF/OBV/RS, Altcoin V62 adaptive engine).
+- 1.7.9 Proxy snapshot plumbing through scanner.
+- 1.7.10 `PanelReport` struct (TRADE SCORE, BIAS, FLOW, EW status, DEEP RISK status, TRAP GATE, ENTRY IDEAL, WAKTU ENTRY, SL width, TP probability, ETA TP1-3, RECLAIM).
+- 1.7.11 Alert & API surfaces consuming the panel.
+- 1.7.12 Configuration additions (V61.4-V62.0 knobs + per-asset overrides).
+- 1.7.13 Parity test harness against captured Pine fixtures.
 
 ### Changes
 

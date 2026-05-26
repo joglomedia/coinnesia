@@ -1,5 +1,6 @@
 pub mod confidence;
 pub mod entry_plan;
+pub mod guard_state;
 pub mod mtf;
 pub mod session;
 pub mod signals;
@@ -22,5 +23,25 @@ impl StrategyEngine {
 
     pub fn evaluate(&self, symbol: &str, candles: &[Candle]) -> SignalResult {
         signals::SignalGenerator::new(&self.config).evaluate(symbol, candles)
+    }
+
+    pub fn evaluate_with_mtf(
+        &self,
+        symbol: &str,
+        candles: &[Candle],
+        mtf: &mtf::MtfCandles,
+    ) -> SignalResult {
+        signals::SignalGenerator::new(&self.config).evaluate_with_mtf(symbol, candles, mtf)
+    }
+
+    pub fn evaluate_with_state(
+        &self,
+        symbol: &str,
+        candles: &[Candle],
+        mtf: Option<&mtf::MtfCandles>,
+        prev_state: &guard_state::GuardState,
+    ) -> (SignalResult, guard_state::GuardState) {
+        signals::SignalGenerator::new(&self.config)
+            .evaluate_with_state(symbol, candles, mtf, prev_state)
     }
 }
