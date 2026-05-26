@@ -30,7 +30,8 @@ use super::{
         compute_consensus, micro_trend, threshold_for_timeframe, timeframe_set, ConsensusResult,
         MtfCandles, TfSummary,
     },
-    session::{classify_wib, session_allows_asset},
+    plan_context::{classify_flow, FlowState, PlanContext},
+    session::{classify_wib, session_allows_asset, MarketSession},
     trap_guard::evaluate_trap_guard,
 };
 
@@ -294,15 +295,40 @@ impl<'a> SignalGenerator<'a> {
             );
         }
 
+        let direction: SignalDirection = state.into();
+        let plan_ctx = build_plan_context(
+            direction,
+            &snapshot,
+            session,
+            self.config,
+            confidence.score(direction),
+            trap_score_long.max(trap_score_short),
+            &new_state,
+        );
+        let plan = EntryPlanCalculator::new(&self.config.entry_plan)
+            .calculate_from_context(&plan_ctx, snapshot.candles, &self.config.trap_guard);
+
+        if plan.stop_loss.rejected_too_wide {
+            return (
+                SignalResult {
+                    symbol: symbol.to_owned(),
+                    state: SignalState::Wait,
+                    confidence,
+                    reason: format!("sl_too_wide:{:?}", session),
+                    entry_plan: Some(plan),
+                },
+                new_state,
+            );
+        }
+
         (
             SignalResult {
                 symbol: symbol.to_owned(),
                 state,
                 confidence,
                 reason: format!("six_layer_pass timeframe={timeframe:?} session={session:?}"),
-                entry_plan: None,
-            }
-            .with_entry_plan(self.config, snapshot.latest.close, snapshot.atr.value),
+                entry_plan: Some(plan),
+            },
             new_state,
         )
     }
@@ -833,6 +859,124 @@ fn last_ready(points: &[IndicatorPoint]) -> IndicatorPoint {
         .unwrap_or_else(IndicatorPoint::pending)
 }
 
+fn build_plan_context(
+    direction: SignalDirection,
+    snapshot: &IndicatorSnapshot<'_>,
+    session: MarketSession,
+    config: &AppConfig,
+    confidence: f64,
+    trap_score: f64,
+    state: &GuardState,
+) -> PlanContext {
+    let latest = snapshot.latest;
+    let atr = snapshot.atr.value.max(0.0);
+    let candles = snapshot.candles;
+
+    // Daily / weekly H-L approximations. When a real D1/W1 timeframe is
+    // available via MTF the upstream snapshot uses it; here we fall back to
+    // a rolling lookback of the primary series. Using 24 bars ≈ "yesterday's
+    // window" for intraday and the most recent bar for daily/weekly.
+    let (daily_high, daily_low) = recent_high_low(candles, 24);
+    let (weekly_high, weekly_low) = recent_high_low(candles, 120);
+    let (sw_high, sw_low) = recent_high_low(candles, config.strategy.structure_lookback.max(8));
+
+    // V61.8 flow classification. session_ratio + ATR ratio against an SMA
+    // baseline of recent ATR. Fall back to Mid when readings aren't ready.
+    let flow_state = if snapshot.volume.session_ratio.ready && atr > 0.0 {
+        let baseline_atr = average_atr(candles, config.entry_plan.flow.flow_lookback);
+        let atr_ratio = if baseline_atr > 0.0 {
+            atr / baseline_atr
+        } else {
+            1.0
+        };
+        classify_flow(
+            snapshot.volume.session_ratio.value,
+            atr_ratio,
+            snapshot.dmi.adx.value,
+            config.entry_plan.flow.low_flow_vol_ratio,
+            config.entry_plan.flow.low_flow_atr_ratio,
+            config.entry_plan.flow.high_flow_vol_ratio,
+            config.entry_plan.flow.high_flow_atr_ratio,
+        )
+    } else {
+        FlowState::Mid
+    };
+
+    let vol_shock = snapshot
+        .volume
+        .z_score
+        .ready
+        .then(|| snapshot.volume.z_score.value >= 3.0)
+        .unwrap_or(false);
+
+    PlanContext {
+        direction,
+        close: latest.close,
+        atr,
+        adx: if snapshot.dmi.adx.ready {
+            snapshot.dmi.adx.value
+        } else {
+            0.0
+        },
+        confidence,
+        trap_score,
+        upper_wick: snapshot.shape.upper_wick,
+        lower_wick: snapshot.shape.lower_wick,
+        swing_high: sw_high,
+        swing_low: sw_low,
+        daily_high,
+        daily_low,
+        weekly_high,
+        weekly_low,
+        vwap: if snapshot.vwap.ready {
+            snapshot.vwap.value
+        } else {
+            latest.close
+        },
+        ema_fast: if snapshot.ema_fast.ready {
+            snapshot.ema_fast.value
+        } else {
+            latest.close
+        },
+        ema_slow: if snapshot.ema_slow.ready {
+            snapshot.ema_slow.value
+        } else {
+            latest.close
+        },
+        session,
+        regime: snapshot.regime,
+        flow_state,
+        trap_now: trap_score >= config.trap_guard.trap_score_threshold,
+        cooldown_active: state.is_trap_cooldown_active(),
+        vol_shock,
+        shock_active: state.is_frozen() || snapshot.regime == MarketRegime::Shock,
+    }
+}
+
+fn recent_high_low(candles: &[Candle], lookback: usize) -> (f64, f64) {
+    if candles.is_empty() {
+        return (0.0, 0.0);
+    }
+    let start = candles.len().saturating_sub(lookback.max(1));
+    let window = &candles[start..];
+    let high = window
+        .iter()
+        .map(|c| c.high)
+        .fold(f64::NEG_INFINITY, f64::max);
+    let low = window.iter().map(|c| c.low).fold(f64::INFINITY, f64::min);
+    (high, low)
+}
+
+fn average_atr(candles: &[Candle], lookback: usize) -> f64 {
+    if candles.is_empty() {
+        return 0.0;
+    }
+    let start = candles.len().saturating_sub(lookback.max(1));
+    let window = &candles[start..];
+    let sum: f64 = window.iter().map(|c| (c.high - c.low).max(0.0)).sum();
+    sum / window.len() as f64
+}
+
 fn pending_dmi() -> DmiPoint {
     DmiPoint {
         adx: IndicatorPoint::pending(),
@@ -1157,6 +1301,15 @@ mod tests {
         config.strategy.min_confidence_1d = 45.0;
         config.strategy.min_directional_gap = 5.0;
         config.strategy.min_structure_score = 5.0;
+        // The synthetic `trending_candles` fixture is a strict monotone slope
+        // with no pullbacks, so swingLow / swingHigh sit several ATR away from
+        // close. Pine itself would reject these setups under V61.6 dynamic
+        // max-SL caps; raise the caps here so the layer-pass tests still
+        // exercise the emission path. Real-market candles produce tighter
+        // swings well under the production caps.
+        config.entry_plan.max_sl_asia_atr = 12.0;
+        config.entry_plan.max_sl_europe_atr = 12.0;
+        config.entry_plan.max_sl_usa_atr = 12.0;
         config
     }
 

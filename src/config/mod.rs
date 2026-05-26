@@ -147,7 +147,136 @@ pub struct EntryPlanConfig {
     pub sl_extra_asia_atr: f64,
     pub sl_extra_europe_atr: f64,
     pub sl_extra_usa_atr: f64,
+    #[serde(default = "default_sl_trap_extra_atr")]
+    pub sl_trap_extra_atr: f64,
+    #[serde(default = "default_sl_wick_extra_atr")]
+    pub sl_wick_extra_atr: f64,
+    #[serde(default = "default_sl_vol_extra_atr")]
+    pub sl_vol_extra_atr: f64,
+    #[serde(default = "default_wick_off_lookback")]
+    pub wick_off_lookback: usize,
+    #[serde(default = "default_wick_off_buffer_atr")]
+    pub wick_off_buffer_atr: f64,
+    #[serde(default = "default_max_sl_asia_atr")]
+    pub max_sl_asia_atr: f64,
+    #[serde(default = "default_max_sl_europe_atr")]
+    pub max_sl_europe_atr: f64,
+    #[serde(default = "default_max_sl_usa_atr")]
+    pub max_sl_usa_atr: f64,
+    #[serde(default = "default_min_pullback_atr")]
+    pub min_pullback_atr: f64,
+    #[serde(default = "default_target_clear_atr")]
+    pub target_clear_atr: f64,
+    #[serde(default = "default_no_chase_tp1_atr")]
+    pub no_chase_tp1_atr: f64,
+    #[serde(default = "default_sl_wide_threshold_atr")]
+    pub sl_wide_threshold_atr: f64,
+    #[serde(default)]
+    pub flow: FlowConfig,
+    #[serde(default)]
+    pub probability: ProbabilityConfig,
 }
+
+fn default_sl_trap_extra_atr() -> f64 { 0.30 }
+fn default_sl_wick_extra_atr() -> f64 { 0.20 }
+fn default_sl_vol_extra_atr() -> f64 { 0.25 }
+fn default_wick_off_lookback() -> usize { 6 }
+fn default_wick_off_buffer_atr() -> f64 { 0.45 }
+fn default_max_sl_asia_atr() -> f64 { 1.60 }
+fn default_max_sl_europe_atr() -> f64 { 1.90 }
+fn default_max_sl_usa_atr() -> f64 { 2.20 }
+fn default_min_pullback_atr() -> f64 { 0.18 }
+fn default_target_clear_atr() -> f64 { 0.08 }
+fn default_no_chase_tp1_atr() -> f64 { 0.20 }
+fn default_sl_wide_threshold_atr() -> f64 { 2.00 }
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FlowConfig {
+    #[serde(default = "default_flow_lookback")]
+    pub flow_lookback: usize,
+    #[serde(default = "default_low_flow_vol_ratio")]
+    pub low_flow_vol_ratio: f64,
+    #[serde(default = "default_high_flow_vol_ratio")]
+    pub high_flow_vol_ratio: f64,
+    #[serde(default = "default_low_flow_atr_ratio")]
+    pub low_flow_atr_ratio: f64,
+    #[serde(default = "default_high_flow_atr_ratio")]
+    pub high_flow_atr_ratio: f64,
+    #[serde(default = "default_low_liq_tp1_max_atr")]
+    pub low_liq_tp1_max_atr: f64,
+    #[serde(default = "default_low_liq_tp2_max_atr")]
+    pub low_liq_tp2_max_atr: f64,
+    #[serde(default = "default_low_liq_tp3_max_atr")]
+    pub low_liq_tp3_max_atr: f64,
+    #[serde(default = "default_mid_liq_tp1_max_atr")]
+    pub mid_liq_tp1_max_atr: f64,
+    #[serde(default = "default_mid_liq_tp2_max_atr")]
+    pub mid_liq_tp2_max_atr: f64,
+    #[serde(default = "default_mid_liq_tp3_max_atr")]
+    pub mid_liq_tp3_max_atr: f64,
+    #[serde(default = "default_low_liq_min_step_atr")]
+    pub low_liq_min_step_atr: f64,
+    #[serde(default = "default_low_flow_prob_penalty")]
+    pub low_flow_prob_penalty: f64,
+    #[serde(default = "default_flow_trap_wick_ratio")]
+    pub flow_trap_wick_ratio: f64,
+}
+
+impl Default for FlowConfig {
+    fn default() -> Self {
+        Self {
+            flow_lookback: default_flow_lookback(),
+            low_flow_vol_ratio: default_low_flow_vol_ratio(),
+            high_flow_vol_ratio: default_high_flow_vol_ratio(),
+            low_flow_atr_ratio: default_low_flow_atr_ratio(),
+            high_flow_atr_ratio: default_high_flow_atr_ratio(),
+            low_liq_tp1_max_atr: default_low_liq_tp1_max_atr(),
+            low_liq_tp2_max_atr: default_low_liq_tp2_max_atr(),
+            low_liq_tp3_max_atr: default_low_liq_tp3_max_atr(),
+            mid_liq_tp1_max_atr: default_mid_liq_tp1_max_atr(),
+            mid_liq_tp2_max_atr: default_mid_liq_tp2_max_atr(),
+            mid_liq_tp3_max_atr: default_mid_liq_tp3_max_atr(),
+            low_liq_min_step_atr: default_low_liq_min_step_atr(),
+            low_flow_prob_penalty: default_low_flow_prob_penalty(),
+            flow_trap_wick_ratio: default_flow_trap_wick_ratio(),
+        }
+    }
+}
+
+fn default_flow_lookback() -> usize { 34 }
+fn default_low_flow_vol_ratio() -> f64 { 0.78 }
+fn default_high_flow_vol_ratio() -> f64 { 1.35 }
+fn default_low_flow_atr_ratio() -> f64 { 0.82 }
+fn default_high_flow_atr_ratio() -> f64 { 1.18 }
+fn default_low_liq_tp1_max_atr() -> f64 { 0.26 }
+fn default_low_liq_tp2_max_atr() -> f64 { 0.43 }
+fn default_low_liq_tp3_max_atr() -> f64 { 0.62 }
+fn default_mid_liq_tp1_max_atr() -> f64 { 0.38 }
+fn default_mid_liq_tp2_max_atr() -> f64 { 0.68 }
+fn default_mid_liq_tp3_max_atr() -> f64 { 0.95 }
+fn default_low_liq_min_step_atr() -> f64 { 0.14 }
+fn default_low_flow_prob_penalty() -> f64 { 14.0 }
+fn default_flow_trap_wick_ratio() -> f64 { 0.58 }
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ProbabilityConfig {
+    #[serde(default = "default_min_tp1_prob")]
+    pub min_tp1_prob: u32,
+    #[serde(default = "default_min_tp2_prob")]
+    pub min_tp2_prob: u32,
+}
+
+impl Default for ProbabilityConfig {
+    fn default() -> Self {
+        Self {
+            min_tp1_prob: default_min_tp1_prob(),
+            min_tp2_prob: default_min_tp2_prob(),
+        }
+    }
+}
+
+fn default_min_tp1_prob() -> u32 { 60 }
+fn default_min_tp2_prob() -> u32 { 42 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TrapGuardConfig {

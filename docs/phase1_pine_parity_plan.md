@@ -173,6 +173,8 @@ Acceptance:
 
 Estimate: 14–18 hours.
 
+Status: **Done (2026-05-26)**.
+
 Tasks:
 
 - Replace `EntryPlanCalculator::calculate(direction, anchor, atr)` (`entry_plan.rs:32-60`) with `calculate(direction, snapshot, guard_state)` where `snapshot` carries swing_low, swing_high, daily_low, daily_high, weekly_low, weekly_high, ATR, VWAP, EMA20/50/200, OB list, session, regime, ADX, flow_state.

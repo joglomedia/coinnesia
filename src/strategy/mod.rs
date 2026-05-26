@@ -2,6 +2,7 @@ pub mod confidence;
 pub mod entry_plan;
 pub mod guard_state;
 pub mod mtf;
+pub mod plan_context;
 pub mod session;
 pub mod signals;
 pub mod sl_engine;

@@ -49,6 +49,38 @@ max_sl_distance_atr = 3.20
 sl_extra_asia_atr = 0.15
 sl_extra_europe_atr = 0.22
 sl_extra_usa_atr = 0.30
+sl_trap_extra_atr = 0.30
+sl_wick_extra_atr = 0.20
+sl_vol_extra_atr = 0.25
+wick_off_lookback = 6
+wick_off_buffer_atr = 0.45
+max_sl_asia_atr = 1.60
+max_sl_europe_atr = 1.90
+max_sl_usa_atr = 2.20
+min_pullback_atr = 0.18
+target_clear_atr = 0.08
+no_chase_tp1_atr = 0.20
+sl_wide_threshold_atr = 2.00
+
+[entry_plan.flow]
+flow_lookback = 34
+low_flow_vol_ratio = 0.78
+high_flow_vol_ratio = 1.35
+low_flow_atr_ratio = 0.82
+high_flow_atr_ratio = 1.18
+low_liq_tp1_max_atr = 0.26
+low_liq_tp2_max_atr = 0.43
+low_liq_tp3_max_atr = 0.62
+mid_liq_tp1_max_atr = 0.38
+mid_liq_tp2_max_atr = 0.68
+mid_liq_tp3_max_atr = 0.95
+low_liq_min_step_atr = 0.14
+low_flow_prob_penalty = 14.0
+flow_trap_wick_ratio = 0.58
+
+[entry_plan.probability]
+min_tp1_prob = 60
+min_tp2_prob = 42
 
 [trap_guard]
 trap_score_threshold = 60.0
