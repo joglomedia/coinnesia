@@ -251,6 +251,8 @@ Acceptance:
 
 Estimate: 8–10 hours.
 
+Status: **Done (2026-05-29)**.
+
 Tasks:
 
 - Replace `evaluate_direction(direction, asset_class, snapshot, config)` single function (`signals.rs:293-372`) with a trait dispatch: `AssetEvaluator` per asset class with default Six-Layer impl and per-class overrides.
