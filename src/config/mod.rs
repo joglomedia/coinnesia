@@ -59,6 +59,28 @@ pub struct IndicatorConfig {
     pub ob_displacement_atr: f64,
     #[serde(default = "default_sr_cluster_atr")]
     pub sr_cluster_atr: f64,
+    #[serde(default = "default_sr_near_atr")]
+    pub sr_near_atr: f64,
+    #[serde(default = "default_sr_daily_lookback")]
+    pub sr_daily_lookback: usize,
+    #[serde(default = "default_sr_weekly_lookback")]
+    pub sr_weekly_lookback: usize,
+    #[serde(default = "default_cmf_length")]
+    pub cmf_length: usize,
+    #[serde(default = "default_obv_slope_length")]
+    pub obv_slope_length: usize,
+    #[serde(default = "default_rvol_length")]
+    pub rvol_length: usize,
+    #[serde(default = "default_rvol_min")]
+    pub rvol_min: f64,
+    #[serde(default = "default_rs_length")]
+    pub rs_length: usize,
+    #[serde(default = "default_htf_ema_fast")]
+    pub htf_ema_fast: usize,
+    #[serde(default = "default_htf_ema_mid")]
+    pub htf_ema_mid: usize,
+    #[serde(default = "default_htf_ema_trend")]
+    pub htf_ema_trend: usize,
 }
 
 fn default_ob_displacement_atr() -> f64 {
@@ -68,6 +90,18 @@ fn default_ob_displacement_atr() -> f64 {
 fn default_sr_cluster_atr() -> f64 {
     0.35
 }
+
+fn default_sr_near_atr() -> f64 { 0.50 }
+fn default_sr_daily_lookback() -> usize { 24 }
+fn default_sr_weekly_lookback() -> usize { 168 }
+fn default_cmf_length() -> usize { 20 }
+fn default_obv_slope_length() -> usize { 10 }
+fn default_rvol_length() -> usize { 20 }
+fn default_rvol_min() -> f64 { 1.20 }
+fn default_rs_length() -> usize { 10 }
+fn default_htf_ema_fast() -> usize { 21 }
+fn default_htf_ema_mid() -> usize { 55 }
+fn default_htf_ema_trend() -> usize { 200 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct StrategyConfig {

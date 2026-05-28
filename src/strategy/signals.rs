@@ -4,10 +4,12 @@ use std::collections::BTreeMap;
 
 use crate::{
     config::{profiles, AppConfig},
+    data::proxy::ProxySnapshot,
     indicators::{
         adx::{calculate_dmi, DmiPoint},
         atr::calculate_atr,
         candle::{analyze, CandleShape},
+        htf_bias::{frame_bias, BiasVote, HtfBiasConfig},
         liquidity::{detect_liquidity_sweep, SweepKind},
         macd::{calculate_macd, MacdPoint},
         order_block::{detect_order_blocks, OrderBlockKind},
@@ -71,7 +73,7 @@ impl<'a> SignalGenerator<'a> {
     }
 
     pub fn evaluate(&self, symbol: &str, candles: &[Candle]) -> SignalResult {
-        self.evaluate_inner(symbol, candles, None, &GuardState::default())
+        self.evaluate_inner(symbol, candles, None, None, &GuardState::default())
             .0
     }
 
@@ -81,7 +83,7 @@ impl<'a> SignalGenerator<'a> {
         candles: &[Candle],
         mtf: &MtfCandles,
     ) -> SignalResult {
-        self.evaluate_inner(symbol, candles, Some(mtf), &GuardState::default())
+        self.evaluate_inner(symbol, candles, Some(mtf), None, &GuardState::default())
             .0
     }
 
@@ -92,9 +94,10 @@ impl<'a> SignalGenerator<'a> {
         symbol: &str,
         candles: &[Candle],
         mtf: Option<&MtfCandles>,
+        proxy: Option<&ProxySnapshot>,
         prev_state: &GuardState,
     ) -> (SignalResult, GuardState) {
-        self.evaluate_inner(symbol, candles, mtf, prev_state)
+        self.evaluate_inner(symbol, candles, mtf, proxy, prev_state)
     }
 
     fn evaluate_inner(
@@ -102,6 +105,7 @@ impl<'a> SignalGenerator<'a> {
         symbol: &str,
         candles: &[Candle],
         mtf: Option<&MtfCandles>,
+        proxy: Option<&ProxySnapshot>,
         prev_state: &GuardState,
     ) -> (SignalResult, GuardState) {
         if candles.len() < self.config.indicators.atr_length + 1 {
@@ -124,7 +128,7 @@ impl<'a> SignalGenerator<'a> {
             );
         };
         let timeframe = timeframe_set(&symbol_config.timeframes).primary;
-        let snapshot = IndicatorSnapshot::new(candles, self.config, mtf);
+        let snapshot = IndicatorSnapshot::new(candles, self.config, mtf, proxy);
 
         // Compute next guard state from this bar's observations. Done up-front
         // so all downstream short-circuits return a consistent state.
@@ -400,10 +404,28 @@ struct IndicatorSnapshot<'a> {
     /// timeframe's last 5 candles; consumed once those guards land.
     #[allow(dead_code)]
     micro_trend: SignalDirection,
+    /// V1 Gold proxy bias derived from D1 XAUUSD candles (Pine `f_bias`).
+    /// `SignalDirection::Wait` when proxy data is unavailable or neutral.
+    /// Consumed by the Gold evaluator (1.7.8).
+    #[allow(dead_code)]
+    xauusd_bias: SignalDirection,
+    /// V5 IDX proxy bias derived from D1 IHSG candles. Consumed by the IDX
+    /// evaluator (1.7.8) for relative-strength and HTF gating.
+    #[allow(dead_code)]
+    ihsg_bias: SignalDirection,
+    /// V58 Forex proxy bias derived from D1 DXY candles. Inverse of USD pairs;
+    /// consumed by the Forex evaluator (1.7.8).
+    #[allow(dead_code)]
+    dxy_bias: SignalDirection,
 }
 
 impl<'a> IndicatorSnapshot<'a> {
-    fn new(candles: &'a [Candle], config: &AppConfig, mtf: Option<&MtfCandles>) -> Self {
+    fn new(
+        candles: &'a [Candle],
+        config: &AppConfig,
+        mtf: Option<&MtfCandles>,
+        proxy: Option<&ProxySnapshot>,
+    ) -> Self {
         let latest = candles.last().expect("candles checked");
         let closes = candles
             .iter()
@@ -498,6 +520,19 @@ impl<'a> IndicatorSnapshot<'a> {
             .unwrap_or(candles);
         let micro_trend_dir = micro_trend(lowest_ltf_candles, &config.strategy.mtf);
 
+        // V1 Gold / V5 IDX / V58 Forex Pine `f_bias` against the proxy candle
+        // streams threaded through from `Scanner::ingest`. EMA periods follow
+        // the V58 HTF config used by the bias engine (21/55/200). When the
+        // proxy fetch returned empty (or proxy is `None`), the bias collapses
+        // to `Wait` so downstream evaluators can treat it as "no opinion."
+        let proxy_bias_config = HtfBiasConfig::forex_default();
+        let xauusd_bias =
+            proxy_bias_from_candles(proxy.map(|p| p.xauusd.as_slice()), proxy_bias_config);
+        let ihsg_bias =
+            proxy_bias_from_candles(proxy.map(|p| p.ihsg.as_slice()), proxy_bias_config);
+        let dxy_bias =
+            proxy_bias_from_candles(proxy.map(|p| p.dxy.as_slice()), proxy_bias_config);
+
         Self {
             candles,
             latest,
@@ -516,7 +551,30 @@ impl<'a> IndicatorSnapshot<'a> {
             mtf: summaries,
             consensus,
             micro_trend: micro_trend_dir,
+            xauusd_bias,
+            ihsg_bias,
+            dxy_bias,
         }
+    }
+}
+
+/// Pine V1 Gold / V5 IDX / V58 Forex proxy bias accessor. Returns the
+/// `SignalDirection` voted by `htf_bias::frame_bias` on the proxy candle
+/// stream, or `Wait` when no proxy data is available.
+fn proxy_bias_from_candles(
+    candles: Option<&[Candle]>,
+    config: HtfBiasConfig,
+) -> SignalDirection {
+    let Some(candles) = candles else {
+        return SignalDirection::Wait;
+    };
+    if candles.is_empty() {
+        return SignalDirection::Wait;
+    }
+    match frame_bias(candles, config).map(|frame| frame.vote) {
+        Some(BiasVote::Long) => SignalDirection::Long,
+        Some(BiasVote::Short) => SignalDirection::Short,
+        _ => SignalDirection::Wait,
     }
 }
 
@@ -1005,6 +1063,9 @@ fn pending_volume() -> VolumePoint {
         z_score: IndicatorPoint::pending(),
         session_average: IndicatorPoint::pending(),
         session_ratio: IndicatorPoint::pending(),
+        session_ema: IndicatorPoint::pending(),
+        session_dev_ema: IndicatorPoint::pending(),
+        session_ema_ratio: IndicatorPoint::pending(),
         decaying: false,
         pressure: crate::indicators::volume::VolumePressure::Neutral,
     }
@@ -1105,7 +1166,7 @@ mod tests {
     fn strict_rsi_layer_rejects_overbought_long() {
         let candles = flat_candles(25);
         let config = test_config();
-        let mut snapshot = IndicatorSnapshot::new(&candles, &config, None);
+        let mut snapshot = IndicatorSnapshot::new(&candles, &config, None, None);
         snapshot.rsi = IndicatorPoint::ready(80.0);
         snapshot.macd.macd = IndicatorPoint::ready(1.0);
         snapshot.macd.signal = IndicatorPoint::ready(1.5);
@@ -1124,7 +1185,7 @@ mod tests {
     fn strict_rsi_layer_accepts_in_range_long() {
         let candles = flat_candles(25);
         let config = test_config();
-        let mut snapshot = IndicatorSnapshot::new(&candles, &config, None);
+        let mut snapshot = IndicatorSnapshot::new(&candles, &config, None, None);
         snapshot.rsi = IndicatorPoint::ready(60.0);
         snapshot.macd.macd = IndicatorPoint::ready(1.0);
         snapshot.macd.signal = IndicatorPoint::ready(0.5);
@@ -1143,7 +1204,7 @@ mod tests {
     fn strict_macd_layer_requires_positive_histogram_for_long() {
         let candles = flat_candles(25);
         let config = test_config();
-        let mut snapshot = IndicatorSnapshot::new(&candles, &config, None);
+        let mut snapshot = IndicatorSnapshot::new(&candles, &config, None, None);
         // RSI out of range so OR clause cannot rescue MACD failure.
         snapshot.rsi = IndicatorPoint::ready(40.0);
         // macd > signal (would pass the pre-fix `>=` check)…
@@ -1165,7 +1226,7 @@ mod tests {
     fn strict_macd_layer_requires_negative_histogram_for_short() {
         let candles = flat_candles(25);
         let config = test_config();
-        let mut snapshot = IndicatorSnapshot::new(&candles, &config, None);
+        let mut snapshot = IndicatorSnapshot::new(&candles, &config, None, None);
         snapshot.rsi = IndicatorPoint::ready(60.0); // out of short range 28..=50
         snapshot.macd.macd = IndicatorPoint::ready(0.5);
         snapshot.macd.signal = IndicatorPoint::ready(1.0);
@@ -1178,6 +1239,47 @@ mod tests {
             !momentum_layer(SignalDirection::Short, &snapshot),
             "positive MACD histogram must fail short strict momentum layer"
         );
+    }
+
+    #[test]
+    fn snapshot_exposes_proxy_biases_when_proxy_candles_provided() {
+        // Acceptance for 1.7.9: snapshot.xauusd_bias is non-empty (Long here)
+        // when the proxy fetch succeeds. Mirror checks for IHSG (rising → Long)
+        // and DXY (falling → Short) confirm the three-proxy plumbing.
+        let config = test_config();
+        let primary = trending_candles(40, SignalDirection::Long);
+
+        let rising = trending_candles(260, SignalDirection::Long);
+        let falling = trending_candles(260, SignalDirection::Short);
+        let proxy = ProxySnapshot {
+            xauusd: rising.clone(),
+            ihsg: rising.clone(),
+            dxy: falling,
+        };
+
+        let snapshot = IndicatorSnapshot::new(&primary, &config, None, Some(&proxy));
+        assert_eq!(snapshot.xauusd_bias, SignalDirection::Long);
+        assert_eq!(snapshot.ihsg_bias, SignalDirection::Long);
+        assert_eq!(snapshot.dxy_bias, SignalDirection::Short);
+    }
+
+    #[test]
+    fn snapshot_proxy_bias_defaults_to_wait_when_proxy_unavailable() {
+        // No proxy snapshot threaded → all three biases collapse to Wait so
+        // downstream evaluators can treat it as "no proxy opinion."
+        let config = test_config();
+        let primary = trending_candles(40, SignalDirection::Long);
+        let snapshot = IndicatorSnapshot::new(&primary, &config, None, None);
+        assert_eq!(snapshot.xauusd_bias, SignalDirection::Wait);
+        assert_eq!(snapshot.ihsg_bias, SignalDirection::Wait);
+        assert_eq!(snapshot.dxy_bias, SignalDirection::Wait);
+
+        // Empty proxy candles also collapse to Wait.
+        let empty_proxy = ProxySnapshot::default();
+        let snapshot = IndicatorSnapshot::new(&primary, &config, None, Some(&empty_proxy));
+        assert_eq!(snapshot.xauusd_bias, SignalDirection::Wait);
+        assert_eq!(snapshot.ihsg_bias, SignalDirection::Wait);
+        assert_eq!(snapshot.dxy_bias, SignalDirection::Wait);
     }
 
     #[test]
@@ -1203,7 +1305,7 @@ mod tests {
         by_tf.insert(Timeframe::H4, h4_candles);
         let mtf = MtfCandles::new(Timeframe::D1, by_tf);
         let config = test_config();
-        let snapshot = IndicatorSnapshot::new(&d1_candles, &config, Some(&mtf));
+        let snapshot = IndicatorSnapshot::new(&d1_candles, &config, Some(&mtf), None);
 
         let d1 = snapshot.mtf.get(&Timeframe::D1).expect("D1 summary present");
         let h4 = snapshot.mtf.get(&Timeframe::H4).expect("H4 summary present");
@@ -1239,7 +1341,7 @@ mod tests {
 
         // Cycle 1: shock candle arms the freeze counter.
         let (signal, next) =
-            generator.evaluate_with_state("BTCUSDT", &shock_candles, None, &state);
+            generator.evaluate_with_state("BTCUSDT", &shock_candles, None, None, &state);
         assert_eq!(signal.state, SignalState::Freeze);
         assert_eq!(next.shock_freeze_bars, freeze_window);
         state = next;
@@ -1249,7 +1351,7 @@ mod tests {
         // the first frozen bar, so we expect (shock_freeze_bars - 1) more.
         for bar in 0..(freeze_window - 1) {
             let (signal, next) =
-                generator.evaluate_with_state("BTCUSDT", &benign_candles, None, &state);
+                generator.evaluate_with_state("BTCUSDT", &benign_candles, None, None, &state);
             assert_eq!(
                 signal.state,
                 SignalState::Freeze,
@@ -1262,7 +1364,7 @@ mod tests {
         // After exactly `freeze_window` decrement bars, the next evaluation
         // must no longer freeze.
         let (signal, _) =
-            generator.evaluate_with_state("BTCUSDT", &benign_candles, None, &state);
+            generator.evaluate_with_state("BTCUSDT", &benign_candles, None, None, &state);
         assert_ne!(
             signal.state,
             SignalState::Freeze,

@@ -17,7 +17,7 @@ use crate::{
     },
     config::AppConfig,
     data::{
-        proxy,
+        proxy::{self, ProxySnapshot},
         stream::{CandleEvent, CandleStream},
         CandleRequest, MarketDataSource, PerSymbolMarketData,
     },
@@ -88,8 +88,8 @@ impl Scanner {
     pub async fn scan_once(&self) -> Result<ScanReport> {
         let cycle_id = Uuid::new_v4();
         let started_at = Utc::now();
-        let work_items = self.ingest().await?;
-        let signals = self.analyze(work_items).await?;
+        let (work_items, proxy_snapshot) = self.ingest().await?;
+        let signals = self.analyze(work_items, &proxy_snapshot).await?;
         let report = ScanReport {
             scanned: self.config.symbols.len(),
             signals,
@@ -101,9 +101,9 @@ impl Scanner {
         Ok(report)
     }
 
-    async fn ingest(&self) -> Result<Vec<ScanWorkItem>> {
+    async fn ingest(&self) -> Result<(Vec<ScanWorkItem>, ProxySnapshot)> {
         let candle_limit = self.config.data_sources.candle_limit;
-        let _proxy_snapshot = proxy::fetch_once_per_cycle(
+        let proxy_snapshot = proxy::fetch_once_per_cycle(
             self.data_source.as_ref(),
             &self.config.proxy_symbols,
             Timeframe::D1,
@@ -128,7 +128,7 @@ impl Scanner {
         }
         let candles = self.data_source.batch_candles(&requests).await?;
 
-        Ok(self
+        let work_items = self
             .config
             .symbols
             .iter()
@@ -151,10 +151,15 @@ impl Scanner {
                     mtf: MtfCandles::new(primary, by_tf),
                 }
             })
-            .collect())
+            .collect();
+        Ok((work_items, proxy_snapshot))
     }
 
-    async fn analyze(&self, work_items: Vec<ScanWorkItem>) -> Result<Vec<SignalResult>> {
+    async fn analyze(
+        &self,
+        work_items: Vec<ScanWorkItem>,
+        proxy_snapshot: &ProxySnapshot,
+    ) -> Result<Vec<SignalResult>> {
         let semaphore = Arc::new(Semaphore::new(self.config.runtime.max_symbol_tasks.max(1)));
         let mut tasks = Vec::with_capacity(work_items.len());
 
@@ -162,6 +167,7 @@ impl Scanner {
             let permit = semaphore.clone().acquire_owned().await?;
             let strategy_config = self.config.clone();
             let store = self.guard_store.clone();
+            let proxy = proxy_snapshot.clone();
             tasks.push(tokio::spawn(async move {
                 let _permit = permit;
                 debug!(
@@ -179,6 +185,7 @@ impl Scanner {
                     &item.symbol,
                     &item.candles,
                     Some(&item.mtf),
+                    Some(&proxy),
                     &prev_state,
                 );
                 store.save(&item.symbol, new_state).await;
@@ -306,7 +313,7 @@ impl Scanner {
             mtf,
         };
 
-        match self.analyze(vec![work_item]).await {
+        match self.analyze(vec![work_item], &ProxySnapshot::default()).await {
             Ok(signals) => {
                 let cycle_id = Uuid::new_v4();
                 let now = Utc::now();
@@ -690,6 +697,64 @@ mod tests {
                         .collect::<Vec<_>>()
                 );
             }
+        }
+    }
+
+    #[tokio::test]
+    async fn proxy_snapshot_fetched_once_per_cycle_regardless_of_symbol_count() {
+        // Acceptance for 1.7.9: each proxy symbol (XAUUSD / IHSG / DXY) appears
+        // exactly once per cycle in the recorded D1 fetch log, regardless of
+        // the number of primary symbols. We filter on D1 because the proxy
+        // fetch is anchored at D1 in `Scanner::ingest`. Primary symbols whose
+        // ticker collides with a proxy ticker (e.g. "IDX:COMPOSITE" appears
+        // both as a primary IDX symbol and as the IHSG proxy) are excluded
+        // from the per-proxy count by subtracting their primary D1 fetches.
+        let config = AppConfig::from_default_toml().expect("default config parses");
+        let proxy_symbols = [
+            config.proxy_symbols.xauusd.symbol().to_owned(),
+            config.proxy_symbols.ihsg.symbol().to_owned(),
+            config.proxy_symbols.dxy.symbol().to_owned(),
+        ];
+        let primary_symbol_set: std::collections::HashSet<String> =
+            config.symbols.iter().map(|s| s.symbol.clone()).collect();
+        let now = Utc::now();
+        let candles = (0..20)
+            .map(|idx| Candle {
+                ts: now + Duration::minutes(idx),
+                open: 100.0,
+                high: 101.0,
+                low: 99.0,
+                close: 100.5,
+                volume: 1000.0,
+            })
+            .collect::<Vec<_>>();
+        let source = Arc::new(RecordingDataSource {
+            candles,
+            requested: Mutex::new(Vec::new()),
+        });
+        let scanner = Scanner::with_data_source(config, source.clone());
+        scanner.scan_once().await.expect("first cycle succeeds");
+        scanner.scan_once().await.expect("second cycle succeeds");
+
+        let requested = source.requested.lock().unwrap().clone();
+        for proxy in &proxy_symbols {
+            if proxy.is_empty() {
+                continue;
+            }
+            let d1_hits = requested
+                .iter()
+                .filter(|(s, tf)| s == proxy && *tf == Timeframe::D1)
+                .count();
+            // Each cycle: 1 proxy fetch (D1) + 0-or-1 primary D1 fetch if the
+            // ticker collides with a primary symbol.
+            let collision = primary_symbol_set.contains(proxy);
+            let expected_per_cycle = if collision { 2 } else { 1 };
+            let expected_total = expected_per_cycle * 2;
+            assert_eq!(
+                d1_hits, expected_total,
+                "expected {expected_total} D1 fetches for {proxy} across 2 cycles \
+                 (collision={collision}); observed {d1_hits}"
+            );
         }
     }
 

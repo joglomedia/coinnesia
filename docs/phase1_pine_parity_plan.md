@@ -228,6 +228,8 @@ Acceptance:
 
 Estimate: 12–16 hours.
 
+Status: **Done (2026-05-28)**.
+
 Tasks:
 
 - Add `src/indicators/cmf.rs` (Chaikin Money Flow, length 20) for IDX `cmf_obv` gate.
@@ -269,6 +271,8 @@ Acceptance:
 ### 1.7.9 Proxy Snapshot Plumbing
 
 Estimate: 4–5 hours.
+
+Status: **Done (2026-05-28)**.
 
 Tasks:
 

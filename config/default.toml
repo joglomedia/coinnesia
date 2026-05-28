@@ -13,6 +13,17 @@ macd_slow = 26
 macd_signal = 9
 ob_displacement_atr = 0.65
 sr_cluster_atr = 0.35
+sr_near_atr = 0.50
+sr_daily_lookback = 24
+sr_weekly_lookback = 168
+cmf_length = 20
+obv_slope_length = 10
+rvol_length = 20
+rvol_min = 1.20
+rs_length = 10
+htf_ema_fast = 21
+htf_ema_mid = 55
+htf_ema_trend = 200
 
 [strategy]
 min_directional_gap = 10.0
@@ -283,9 +294,16 @@ timeframes = ["15m", "1h", "4h", "1d"]
 
 [[symbols]]
 symbol = "PAXGUSDT"
-asset_class = "gold"
+asset_class = "altcoin"
 exchange = "binance"
 data_source = "binance"
+timeframes = ["15m", "1h", "4h", "1d"]
+
+[[symbols]]
+symbol = "XAUUSD"
+asset_class = "forex"
+exchange = ""
+data_source = "tradingview"
 timeframes = ["15m", "1h", "4h", "1d"]
 
 [[symbols]]
