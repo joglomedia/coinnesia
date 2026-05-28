@@ -206,6 +206,8 @@ Acceptance:
 
 Estimate: 8–10 hours.
 
+Status: **Done (2026-05-28)**.
+
 Tasks:
 
 - Extend `trap_guard.rs:36-101` to include Pine's full trap component set: `volZ`, `rangeShock`, `wickATR`, `slowStopHunt`, `eqHighSweep`, `eqLowSweep`, `stealthDistribution`, `stealthAccumulation`. Each emits a sub-score; aggregate via Pine weights.

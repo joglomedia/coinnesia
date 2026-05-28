@@ -95,6 +95,13 @@ cooldown_band_high_score = 90.0
 shock_freeze_bars = 5
 deep_reclaim_bars = 3
 min_swing_distance_atr = 0.45
+pressure_cluster_bars = 8
+pressure_cluster_min = 3
+pressure_vol_ratio = 1.15
+shock_range_atr = 2.50
+shock_body_atr = 1.40
+distribution_reject_bars = 5
+sess_vol_breakout_ratio = 1.15
 
 [session]
 timezone = "Asia/Jakarta"

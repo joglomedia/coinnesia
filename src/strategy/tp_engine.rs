@@ -136,7 +136,15 @@ impl TakeProfits {
             (config.max_tp1_atr, config.max_tp2_atr, config.max_tp3_atr)
         };
 
-        let (flow_max_tp1, flow_max_tp2, flow_max_tp3, flow_min_step) = match ctx.flow_state {
+        // Pine `flowTrapBlock` forces low-flow caps regardless of the
+        // detected `flowState` so TP1/2/3 don't chase past stalling
+        // liquidity when a trap is co-firing with thin volume.
+        let effective_flow = if ctx.flow_trap_block {
+            FlowState::Low
+        } else {
+            ctx.flow_state
+        };
+        let (flow_max_tp1, flow_max_tp2, flow_max_tp3, flow_min_step) = match effective_flow {
             FlowState::Low => (
                 config.flow.low_liq_tp1_max_atr,
                 config.flow.low_liq_tp2_max_atr,

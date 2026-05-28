@@ -59,6 +59,11 @@ pub struct PlanContext {
     pub cooldown_active: bool,
     pub vol_shock: bool,
     pub shock_active: bool,
+    /// Pine `flowTrapBlock` (V61.8/V61.9) — true when thin-flow wick risk
+    /// coincides with a sweep / trap / volShock event. Forces TP engine
+    /// into a low-flow cap regardless of `flow_state` and applies an extra
+    /// probability penalty downstream.
+    pub flow_trap_block: bool,
 }
 
 impl PlanContext {

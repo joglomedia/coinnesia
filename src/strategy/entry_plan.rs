@@ -263,6 +263,7 @@ mod tests {
             cooldown_active: false,
             vol_shock: false,
             shock_active: false,
+            flow_trap_block: false,
         }
     }
 

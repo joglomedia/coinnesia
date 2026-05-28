@@ -130,18 +130,19 @@ impl<'a> SignalGenerator<'a> {
         // so all downstream short-circuits return a consistent state.
         let (swing_high, swing_low) =
             latest_swings(candles, self.config.strategy.structure_lookback);
-        let trap_score_long = evaluate_trap_guard(
+        let trap_long = evaluate_trap_guard(
             snapshot.candles,
             &self.config.trap_guard,
             SignalDirection::Long,
-        )
-        .penalty;
-        let trap_score_short = evaluate_trap_guard(
+        );
+        let trap_short = evaluate_trap_guard(
             snapshot.candles,
             &self.config.trap_guard,
             SignalDirection::Short,
-        )
-        .penalty;
+        );
+        let trap_score_long = trap_long.penalty;
+        let trap_score_short = trap_short.penalty;
+        let flow_trap_block = trap_long.flow_trap_block || trap_short.flow_trap_block;
         let advance_input = GuardAdvanceInput {
             regime: snapshot.regime,
             trap_score: trap_score_long.max(trap_score_short),
@@ -304,6 +305,7 @@ impl<'a> SignalGenerator<'a> {
             confidence.score(direction),
             trap_score_long.max(trap_score_short),
             &new_state,
+            flow_trap_block,
         );
         let plan = EntryPlanCalculator::new(&self.config.entry_plan)
             .calculate_from_context(&plan_ctx, snapshot.candles, &self.config.trap_guard);
@@ -867,6 +869,7 @@ fn build_plan_context(
     confidence: f64,
     trap_score: f64,
     state: &GuardState,
+    flow_trap_block: bool,
 ) -> PlanContext {
     let latest = snapshot.latest;
     let atr = snapshot.atr.value.max(0.0);
@@ -950,6 +953,7 @@ fn build_plan_context(
         cooldown_active: state.is_trap_cooldown_active(),
         vol_shock,
         shock_active: state.is_frozen() || snapshot.regime == MarketRegime::Shock,
+        flow_trap_block,
     }
 }
 

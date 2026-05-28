@@ -300,6 +300,20 @@ pub struct TrapGuardConfig {
     pub deep_reclaim_bars: usize,
     #[serde(default = "default_min_swing_distance_atr")]
     pub min_swing_distance_atr: f64,
+    #[serde(default = "default_pressure_cluster_bars")]
+    pub pressure_cluster_bars: usize,
+    #[serde(default = "default_pressure_cluster_min")]
+    pub pressure_cluster_min: usize,
+    #[serde(default = "default_pressure_vol_ratio")]
+    pub pressure_vol_ratio: f64,
+    #[serde(default = "default_shock_range_atr")]
+    pub shock_range_atr: f64,
+    #[serde(default = "default_shock_body_atr")]
+    pub shock_body_atr: f64,
+    #[serde(default = "default_distribution_reject_bars")]
+    pub distribution_reject_bars: usize,
+    #[serde(default = "default_sess_vol_breakout_ratio")]
+    pub sess_vol_breakout_ratio: f64,
 }
 
 fn default_cooldown_band_low_bars() -> usize {
@@ -333,6 +347,14 @@ fn default_deep_reclaim_bars() -> usize {
 fn default_min_swing_distance_atr() -> f64 {
     0.45
 }
+
+fn default_pressure_cluster_bars() -> usize { 8 }
+fn default_pressure_cluster_min() -> usize { 3 }
+fn default_pressure_vol_ratio() -> f64 { 1.15 }
+fn default_shock_range_atr() -> f64 { 2.50 }
+fn default_shock_body_atr() -> f64 { 1.40 }
+fn default_distribution_reject_bars() -> usize { 5 }
+fn default_sess_vol_breakout_ratio() -> f64 { 1.15 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SessionConfig {

@@ -196,7 +196,7 @@ Headline sub-phases (full breakdown in the parity plan doc):
 - 1.7.3 Multi-timeframe data pipeline (M1/M5/M15/H1/H4/D1/W1/MN) + consensus + microTrend.
 - 1.7.4 Stateful guard counters (trap cooldown, shock freeze, deep reclaim, SMC trend state).
 - 1.7.5 EW/SL/TP engine rewrite — swing/VWAP/EMA anchored, session-reachable, liquidity-capped, flow-adaptive, probability-scored. **Done 2026-05-26.**
-- 1.7.6 Trap guard & V61.8 flow engine.
+- 1.7.6 Trap guard & V61.8 flow engine. **Done 2026-05-28.**
 - 1.7.7 New indicators: CMF, OBV, RVOL, HTF bias, relative-strength.
 - 1.7.8 Asset-class evaluator branching (Gold proxy bias, Forex HTF, IDX RVOL/CMF/OBV/RS, Altcoin V62 adaptive engine).
 - 1.7.9 Proxy snapshot plumbing through scanner.
