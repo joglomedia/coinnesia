@@ -134,6 +134,8 @@ Acceptance:
 
 Estimate: 12–16 hours.
 
+Status: **Done (2026-06-01)**.
+
 Tasks:
 
 - Extend `scanner::ingest` (`scanner/mod.rs:89-135`) to fan out CandleRequests for `[M1, M5, M15, H1, H4, D1, W1, M1mo]` per symbol (configurable per asset class which subset is required).
@@ -153,6 +155,8 @@ Acceptance:
 ### 1.7.4 Stateful Guard Counters
 
 Estimate: 8–10 hours.
+
+Status: **Done (2026-06-01)**.
 
 Tasks:
 
@@ -292,6 +296,8 @@ Acceptance:
 ### 1.7.10 Panel Report Data Structure
 
 Estimate: 8–10 hours.
+
+Status: **Done (2026-05-29)**.
 
 Tasks:
 

@@ -193,14 +193,14 @@ Headline sub-phases (full breakdown in the parity plan doc):
 
 - 1.7.1 Core strategy bug fixes (regime gate, RSI/MACD layers, EW1 clamp, OB body-ratio, zone tolerance).
 - 1.7.2 Session & VWAP boundary alignment to Pine WIB cutoffs.
-- 1.7.3 Multi-timeframe data pipeline (M1/M5/M15/H1/H4/D1/W1/MN) + consensus + microTrend.
-- 1.7.4 Stateful guard counters (trap cooldown, shock freeze, deep reclaim, SMC trend state).
+- 1.7.3 Multi-timeframe data pipeline (M1/M5/M15/H1/H4/D1/W1/MN) + consensus + microTrend. **Done 2026-06-01.**
+- 1.7.4 Stateful guard counters (trap cooldown, shock freeze, deep reclaim, SMC trend state). **Done 2026-06-01.**
 - 1.7.5 EW/SL/TP engine rewrite — swing/VWAP/EMA anchored, session-reachable, liquidity-capped, flow-adaptive, probability-scored. **Done 2026-05-26.**
 - 1.7.6 Trap guard & V61.8 flow engine. **Done 2026-05-28.**
 - 1.7.7 New indicators: CMF, OBV, RVOL, HTF bias, relative-strength. **Done 2026-05-28.**
 - 1.7.8 Asset-class evaluator branching (Gold proxy bias, Forex HTF, IDX RVOL/CMF/OBV/RS, Altcoin V62 adaptive engine). **Done 2026-05-29.**
 - 1.7.9 Proxy snapshot plumbing through scanner. **Done 2026-05-28.**
-- 1.7.10 `PanelReport` struct (TRADE SCORE, BIAS, FLOW, EW status, DEEP RISK status, TRAP GATE, ENTRY IDEAL, WAKTU ENTRY, SL width, TP probability, ETA TP1-3, RECLAIM).
+- 1.7.10 `PanelReport` struct (TRADE SCORE, BIAS, FLOW, EW status, DEEP RISK status, TRAP GATE, ENTRY IDEAL, WAKTU ENTRY, SL width, TP probability, ETA TP1-3, RECLAIM). **Done 2026-05-29.**
 - 1.7.11 Alert & API surfaces consuming the panel.
 - 1.7.12 Configuration additions (V61.4-V62.0 knobs + per-asset overrides).
 - 1.7.13 Parity test harness against captured Pine fixtures.

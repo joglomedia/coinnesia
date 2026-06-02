@@ -4,13 +4,16 @@
 //! snapshot — Pine semantics ported from
 //! `docs/TV_Pine_Scripts/TV_BTC_V61_9_FLOW_INTERPRETATION_PANEL_FULL.pine.txt`.
 
+use serde::{Deserialize, Serialize};
+
 use crate::indicators::regime::MarketRegime;
 
 use super::{session::MarketSession, SignalDirection};
 
 /// V61.8 liquidity / flow classification driving TP cap selection and
 /// probability penalties.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "UPPERCASE")]
 pub enum FlowState {
     /// "RENDAH" — thin liquidity, narrow ATR; tightest TP caps + prob penalty.
     Low,

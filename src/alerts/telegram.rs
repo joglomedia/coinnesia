@@ -152,6 +152,7 @@ mod tests {
             confidence: ConfidenceScore::from_sides(82.0, 20.0),
             reason: "test_signal".to_owned(),
             entry_plan: None,
+            panel: None,
         }
         .with_entry_plan(&config, 100.0, 10.0);
 
@@ -168,6 +169,7 @@ mod tests {
             confidence: ConfidenceScore::neutral(),
             reason: "test_wait".to_owned(),
             entry_plan: None,
+            panel: None,
         };
 
         let message = super::format_signal(&signal);

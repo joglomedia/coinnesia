@@ -61,6 +61,15 @@ pub struct GuardState {
     pub last_swing_high: Option<f64>,
     /// Last swing low used for `min_swing_distance_atr` validation.
     pub last_swing_low: Option<f64>,
+    /// V61.4 last computed deep-add level for a long candidate. `None` until
+    /// the entry-plan engine first surfaces a long deep-add. The scanner
+    /// updates this after each emission so the next bar can detect break /
+    /// reclaim against the same anchor.
+    #[serde(default)]
+    pub last_deep_add_long: Option<f64>,
+    /// Mirror of `last_deep_add_long` for short candidates.
+    #[serde(default)]
+    pub last_deep_add_short: Option<f64>,
 }
 
 /// Inputs the strategy needs to advance the state at the close of a bar.
