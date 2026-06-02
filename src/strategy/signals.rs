@@ -37,7 +37,7 @@ use super::{
         compute_consensus, micro_trend, threshold_for_timeframe, timeframe_set, ConsensusResult,
         MtfCandles, TfSummary,
     },
-    panel::{PanelInputs, PanelReport},
+    panel::{PanelAssetExtras, PanelInputs, PanelReport},
     plan_context::{classify_flow, FlowState, PlanContext},
     session::{classify_wib, session_allows_asset, MarketSession},
     trap_guard::evaluate_trap_guard,
@@ -219,6 +219,13 @@ impl<'a> SignalGenerator<'a> {
             trap_short
         };
 
+        // Per-asset extras for the panel: IDX populates RVOL/CMF/OBV/RS,
+        // Gold populates the XAU proxy bias, Forex populates the H4+D1 HTF
+        // aggregate. Other classes return defaults so the renderer simply
+        // omits those rows.
+        let extras_for_panel =
+            extract_asset_extras(symbol_config.asset_class, &snapshot);
+
         // Helper closure: builds a `PanelReport` for an emission. The first
         // four parameters carry the variant of state we are returning; the
         // remainder are the static panel inputs computed above. Always
@@ -231,6 +238,7 @@ impl<'a> SignalGenerator<'a> {
                            reason: &str|
          -> PanelReport {
             let inputs = PanelInputs {
+                asset_class: symbol_config.asset_class,
                 state,
                 direction,
                 confidence,
@@ -253,6 +261,7 @@ impl<'a> SignalGenerator<'a> {
                 guard: &new_state,
                 plan,
                 reason,
+                extras: extras_for_panel,
             };
             PanelReport::build(&inputs)
         };
@@ -636,6 +645,7 @@ impl<'a> SignalGenerator<'a> {
         // `new_state` before the deep-add mutation below.
         let panel = {
             let inputs = PanelInputs {
+                asset_class: symbol_config.asset_class,
                 state,
                 direction,
                 confidence,
@@ -658,6 +668,7 @@ impl<'a> SignalGenerator<'a> {
                 guard: &new_state,
                 plan: Some(&plan),
                 reason: &reason,
+                extras: extras_for_panel,
             };
             PanelReport::build(&inputs)
         };
@@ -1539,6 +1550,49 @@ fn average_atr(candles: &[Candle], lookback: usize) -> f64 {
     let window = &candles[start..];
     let sum: f64 = window.iter().map(|c| (c.high - c.low).max(0.0)).sum();
     sum / window.len() as f64
+}
+
+/// Build per-asset extras for the panel from the active `IndicatorSnapshot`.
+/// IDX surfaces RVOL/CMF/OBV/RS; Gold surfaces the XAUUSD proxy bias; Forex
+/// surfaces the H4+D1 HTF aggregate scores. Other classes return defaults
+/// so the renderer simply omits those rows.
+fn extract_asset_extras(
+    asset_class: AssetClass,
+    snapshot: &IndicatorSnapshot<'_>,
+) -> PanelAssetExtras {
+    let mut extras = PanelAssetExtras::default();
+    match asset_class {
+        AssetClass::Gold => {
+            extras.xauusd_bias = Some(snapshot.xauusd_bias);
+        }
+        AssetClass::Forex => {
+            if let Some(htf) = snapshot.htf_bias_aggregate {
+                extras.htf_long_score = Some(htf.long_score);
+                extras.htf_short_score = Some(htf.short_score);
+                extras.htf_max_score = Some(htf.max_score);
+                extras.htf_block_long = Some(htf.block_long);
+                extras.htf_block_short = Some(htf.block_short);
+            }
+        }
+        AssetClass::StocksIdx => {
+            if snapshot.rvol.rvol.ready {
+                extras.rvol_value = Some(snapshot.rvol.rvol.value);
+            }
+            if snapshot.cmf.ready {
+                extras.cmf_value = Some(snapshot.cmf.value);
+            }
+            if snapshot.obv_slope.ready {
+                extras.obv_slope_value = Some(snapshot.obv_slope.value);
+            }
+            if let Some(rs) = snapshot.rs_vs_ihsg {
+                if rs.rs.ready {
+                    extras.rs_vs_ihsg_value = Some(rs.rs.value);
+                }
+            }
+        }
+        AssetClass::Btc | AssetClass::Altcoin | AssetClass::StocksUs => {}
+    }
+    extras
 }
 
 /// V61.8 flow state classifier extracted so both the panel builder and the

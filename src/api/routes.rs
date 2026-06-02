@@ -16,6 +16,11 @@ pub fn router(state: AppState) -> Router {
         .route("/metrics", get(handlers::metrics))
         .route("/config", get(handlers::config_summary))
         .route("/scan", post(handlers::scan_trigger))
+        // 1.7.11 — panel surfaces. `/signals/{symbol}` returns the latest
+        // panel report JSON; `/panel/{symbol}` renders the same panel as an
+        // HTML page for human inspection.
+        .route("/signals/{symbol}", get(handlers::signal_by_symbol))
+        .route("/panel/{symbol}", get(handlers::panel_by_symbol))
         .layer(middleware::from_fn_with_state(
             state.clone(),
             metrics::record_api_metrics,
@@ -291,5 +296,60 @@ mod tests {
         let body = json_response(response).await;
         assert_eq!(body["accepted"], true);
         std::env::remove_var("COINNESIA_TEST_API_TOKEN_ACCEPT");
+    }
+
+    #[tokio::test]
+    async fn signal_by_symbol_returns_404_when_no_data() {
+        // Acceptance for 1.7.11: when neither the cache nor the database
+        // hold a record for the requested symbol, the API returns 404 with
+        // a JSON body describing the miss. With cache + db disabled in the
+        // test bootstrap the handler never finds a panel.
+        let app = test_router("COINNESIA_TEST_API_TOKEN_SIG_404").await;
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/signals/UNKNOWN")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
+        let body = json_response(response).await;
+        assert_eq!(body["error"], "no_signal");
+        assert_eq!(body["symbol"], "UNKNOWN");
+    }
+
+    #[tokio::test]
+    async fn panel_by_symbol_renders_html_404_when_no_data() {
+        let app = test_router("COINNESIA_TEST_API_TOKEN_PANEL_404").await;
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/panel/UNKNOWN")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
+        let content_type = response
+            .headers()
+            .get("content-type")
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or("")
+            .to_owned();
+        assert!(
+            content_type.starts_with("text/html"),
+            "expected HTML content-type, got: {content_type}"
+        );
+        let bytes = to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("body bytes");
+        let body = String::from_utf8(bytes.to_vec()).expect("utf8");
+        assert!(body.contains("No panel"));
+        assert!(body.contains("UNKNOWN"));
     }
 }

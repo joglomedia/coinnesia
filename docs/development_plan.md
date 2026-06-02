@@ -201,7 +201,7 @@ Headline sub-phases (full breakdown in the parity plan doc):
 - 1.7.8 Asset-class evaluator branching (Gold proxy bias, Forex HTF, IDX RVOL/CMF/OBV/RS, Altcoin V62 adaptive engine). **Done 2026-05-29.**
 - 1.7.9 Proxy snapshot plumbing through scanner. **Done 2026-05-28.**
 - 1.7.10 `PanelReport` struct (TRADE SCORE, BIAS, FLOW, EW status, DEEP RISK status, TRAP GATE, ENTRY IDEAL, WAKTU ENTRY, SL width, TP probability, ETA TP1-3, RECLAIM). **Done 2026-05-29.**
-- 1.7.11 Alert & API surfaces consuming the panel.
+- 1.7.11 Alert & API surfaces consuming the panel. **Done 2026-06-02.**
 - 1.7.12 Configuration additions (V61.4-V62.0 knobs + per-asset overrides).
 - 1.7.13 Parity test harness against captured Pine fixtures.
 

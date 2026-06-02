@@ -333,6 +333,8 @@ Acceptance:
 
 Estimate: 6–8 hours.
 
+Status: **Done (2026-06-02)**.
+
 Tasks:
 
 - Rewrite `alerts/telegram.rs::format_signal` to render the full panel as a structured Telegram HTML message (table-like with each panel row on its own line, using emoji ✅/❌/⚠️ markers consistent with the asset's report style).

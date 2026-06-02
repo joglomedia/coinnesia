@@ -115,4 +115,22 @@ mod tests {
 
         assert!(has_phase_0_4);
     }
+
+    #[test]
+    fn migration_catalog_contains_phase_1_7_11_panel_report() {
+        // Acceptance for 1.7.11: the additive panel_report column migration
+        // is shipped under src/storage/migrations and is non-destructive
+        // (legacy rows simply carry panel_report = NULL).
+        let migration_dir =
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/storage/migrations");
+        let entries = std::fs::read_dir(&migration_dir).expect("migration dir readable");
+        let has_panel = entries.filter_map(Result::ok).any(|entry| {
+            entry
+                .file_name()
+                .to_string_lossy()
+                .contains("phase_1_7_11_panel_report")
+        });
+
+        assert!(has_panel);
+    }
 }

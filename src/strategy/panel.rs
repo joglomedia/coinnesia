@@ -11,7 +11,7 @@
 use chrono::{DateTime, Duration, Utc};
 use serde::{Deserialize, Serialize};
 
-use crate::{Candle, Timeframe};
+use crate::{AssetClass, Candle, Timeframe};
 
 use super::{
     confidence::ConfidenceScore,
@@ -105,12 +105,40 @@ impl TimestampRange {
     }
 }
 
+/// Per-asset panel extras populated for the IDX/Gold/Forex variants of the
+/// Telegram panel and the `GET /panel/:symbol` HTML page. Each block is
+/// `Option<…>` so the renderer can omit the row when the underlying gauge
+/// did not fire.
+#[derive(Debug, Clone, Copy, PartialEq, Default, Serialize, Deserialize)]
+pub struct PanelAssetExtras {
+    /// V1 Gold XAUUSD proxy bias (Long/Short/Wait). Present when the panel
+    /// belongs to a Gold-classified symbol with proxy data threaded in.
+    pub xauusd_bias: Option<SignalDirection>,
+    /// V58 Forex HTF aggregate (H4 + D1). `htf_long_score` / `htf_short_score`
+    /// out of `htf_max_score` votes; `block_long` / `block_short` mirror the
+    /// `blockCounterHTF` hard gate decision.
+    pub htf_long_score: Option<u32>,
+    pub htf_short_score: Option<u32>,
+    pub htf_max_score: Option<u32>,
+    pub htf_block_long: Option<bool>,
+    pub htf_block_short: Option<bool>,
+    /// V5 IDX flow gauges. Each is `None` when the indicator is still in its
+    /// warm-up window. `rvol_value` is the V5 IDX RVOL reading, `cmf_value`
+    /// the 20-period CMF, `obv_slope_value` the OBV slope, `rs_vs_ihsg_value`
+    /// the relative-strength delta against IHSG.
+    pub rvol_value: Option<f64>,
+    pub cmf_value: Option<f64>,
+    pub obv_slope_value: Option<f64>,
+    pub rs_vs_ihsg_value: Option<f64>,
+}
+
 /// Full panel payload mirroring the Pine reference panels. Fields the strategy
 /// could not produce (no entry plan, no TPs, etc.) come back as `None` so the
 /// renderer can emit a `"—"` placeholder without re-deriving the missing
 /// columns.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct PanelReport {
+    pub asset_class: AssetClass,
     pub putusan_text: String,
     pub trade_score: u32,
     pub trade_score_status: TradeScoreStatus,
@@ -141,12 +169,15 @@ pub struct PanelReport {
     pub eta_tp2: Option<TimestampRange>,
     pub eta_tp3: Option<TimestampRange>,
     pub reclaim_price: Option<f64>,
+    #[serde(default)]
+    pub extras: PanelAssetExtras,
 }
 
 /// Inputs required to build a `PanelReport`. Borrowed so the strategy module
 /// can populate the panel at any short-circuit point without cloning candles
 /// or guard state.
 pub struct PanelInputs<'a> {
+    pub asset_class: AssetClass,
     pub state: SignalState,
     pub direction: SignalDirection,
     pub confidence: ConfidenceScore,
@@ -164,6 +195,8 @@ pub struct PanelInputs<'a> {
     pub guard: &'a GuardState,
     pub plan: Option<&'a EntryPlan>,
     pub reason: &'a str,
+    /// Asset-class-specific extras populated from the active IndicatorSnapshot.
+    pub extras: PanelAssetExtras,
 }
 
 impl PanelReport {
@@ -281,6 +314,7 @@ impl PanelReport {
         };
 
         Self {
+            asset_class: inputs.asset_class,
             putusan_text,
             trade_score,
             trade_score_status,
@@ -311,6 +345,7 @@ impl PanelReport {
             eta_tp2,
             eta_tp3,
             reclaim_price,
+            extras: inputs.extras,
         }
     }
 }
@@ -618,6 +653,7 @@ mod tests {
         plan: Option<&'a EntryPlan>,
     ) -> PanelInputs<'a> {
         PanelInputs {
+            asset_class: AssetClass::Btc,
             state: SignalState::Wait,
             direction: SignalDirection::Wait,
             confidence: ConfidenceScore::neutral(),
@@ -635,6 +671,7 @@ mod tests {
             guard,
             plan,
             reason: "test",
+            extras: PanelAssetExtras::default(),
         }
     }
 

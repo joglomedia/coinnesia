@@ -301,9 +301,10 @@ impl SignalRepository {
             r#"
             INSERT INTO signal_evaluations (
                 id, symbol, timeframe, asset_class, state, direction,
-                confidence, directional_gap, reason, entry_plan, indicators, evaluated_at
+                confidence, directional_gap, reason, entry_plan, indicators,
+                evaluated_at, panel_report
             )
-            VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)
+            VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)
             "#,
         )
         .bind(signal.id)
@@ -318,6 +319,7 @@ impl SignalRepository {
         .bind(&signal.entry_plan)
         .bind(&signal.indicators)
         .bind(signal.evaluated_at)
+        .bind(&signal.panel_report)
         .execute(self.db.pool())
         .await
         .context("failed to insert signal evaluation")?;
@@ -329,7 +331,8 @@ impl SignalRepository {
             r#"
             SELECT
                 id, symbol, timeframe, asset_class, state, direction,
-                confidence, directional_gap, reason, entry_plan, indicators, evaluated_at
+                confidence, directional_gap, reason, entry_plan, indicators,
+                evaluated_at, panel_report
             FROM signal_evaluations
             WHERE id = $1
             "#,
@@ -345,7 +348,8 @@ impl SignalRepository {
             r#"
             SELECT
                 id, symbol, timeframe, asset_class, state, direction,
-                confidence, directional_gap, reason, entry_plan, indicators, evaluated_at
+                confidence, directional_gap, reason, entry_plan, indicators,
+                evaluated_at, panel_report
             FROM signal_evaluations
             WHERE indicators->>'cycle_id' = $1
               AND symbol = $2
@@ -358,6 +362,28 @@ impl SignalRepository {
         .fetch_one(self.db.pool())
         .await
         .context("failed to fetch signal evaluation by cycle and symbol")
+    }
+
+    /// Return the latest persisted signal for a symbol, regardless of cycle.
+    /// Used by the `GET /signals/:symbol` API surface (sub-phase 1.7.11).
+    pub async fn latest_for_symbol(&self, symbol: &str) -> Result<Option<SignalRecord>> {
+        let record = query_as::<_, SignalRecord>(
+            r#"
+            SELECT
+                id, symbol, timeframe, asset_class, state, direction,
+                confidence, directional_gap, reason, entry_plan, indicators,
+                evaluated_at, panel_report
+            FROM signal_evaluations
+            WHERE symbol = $1
+            ORDER BY evaluated_at DESC
+            LIMIT 1
+            "#,
+        )
+        .bind(symbol)
+        .fetch_optional(self.db.pool())
+        .await
+        .context("failed to fetch latest signal evaluation for symbol")?;
+        Ok(record)
     }
 }
 

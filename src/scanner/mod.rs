@@ -493,6 +493,10 @@ fn signal_record(
         .entry_plan
         .as_ref()
         .and_then(|entry_plan| serde_json::to_value(entry_plan).ok());
+    record.panel_report = signal
+        .panel
+        .as_ref()
+        .and_then(|panel| serde_json::to_value(panel).ok());
     record.indicators = serde_json::json!({
         "confidence": signal.confidence,
         "cycle_id": cycle_id,
