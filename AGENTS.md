@@ -440,6 +440,58 @@ maker_fee_pct = 0.02
 taker_fee_pct = 0.04
 slippage_model = "fixed"
 slippage_bps = 5
+
+# V61.x parity knobs (sub-phase 1.7.12)
+[indicators]
+session_volume_baseline_length = 34
+session_volume_shock_z = 2.20
+session_breakout_volume_ratio = 1.15
+bos_close_buffer_atr = 0.10
+choch_close_buffer_atr = 0.12
+liquidity_equal_atr = 0.20
+ob_validation_vol_ratio = 1.10
+momentum_decay_bars = 8
+
+[strategy]
+min_structure_edge = 0.15
+
+[entry_plan]
+ew_micro_1_atr = 0.06
+ew_micro_2_atr = 0.12
+ew_micro_3_atr = 0.20
+ew_session_open_buffer_atr = 0.18
+min_rr_trade = 1.6
+
+# Per-asset overrides
+[assets.altcoin]
+alt_ew_vol_compress = 0.85
+alt_tp_thin_compress = 0.78
+alt_sl_wick_buffer_atr = 0.35
+alt_trap_sensitivity = 1.10
+alt_min_break_body_atr = 0.55
+alt_max_chase_atr = 0.60
+alt_ltf_weight = 1.20
+alt_htf_relax = 0.85
+alt_profile = "AUTO"          # AUTO | MAJOR | MID | MEME
+
+[assets.gold]
+gold_session_bias_mode = "hybrid"   # session | proxy | hybrid
+gold_news_window_atr = 1.80
+gold_proxy_min_alignment = 0.65
+
+[assets.forex]
+forex_rr_asia = 1.40
+forex_rr_europe = 1.80
+forex_rr_usa = 2.00
+forex_block_counter_htf = true
+
+[assets.stocks_idx]
+idx_rvol_min = 1.10
+idx_cmf_length = 20
+idx_obv_slope_bars = 10
+idx_value_traded_min = 500000000.0
+idx_rs_min = 0.0
+idx_downside_risk_threshold = 1.35
 ```
 
 ## Testing Requirements

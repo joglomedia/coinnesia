@@ -616,7 +616,72 @@ COINNESIA_CONFIG=config/my_override.toml cargo run -- scan-once
 [backtest]          # date range, initial capital, fees model
 [[symbols]]         # one entry per trading symbol
 [proxy_symbols.*]   # XAUUSD, IHSG, DXY context symbols
+[assets.altcoin]    # V62 altcoin overrides (EW/TP compress, trap sensitivity, profile)
+[assets.gold]       # Gold V1 overrides (session bias mode, news window, proxy alignment)
+[assets.forex]      # Forex V58 overrides (per-session RR, HTF counter-block)
+[assets.stocks_idx] # IDX V5 overrides (RVOL min, value-traded floor, downside risk)
 ```
+
+### V61.x parity knobs (sub-phase 1.7.12)
+
+The following knobs were added alongside the V61.x Pine parity work. All have
+defaults that mirror the Pine inputs, so an existing `config/default.toml` keeps
+working unchanged — these are additive.
+
+```toml
+[indicators]
+session_volume_baseline_length = 34   # rolling window for session volume MA
+session_volume_shock_z = 2.20         # z-score above which a bar is "shock volume"
+session_breakout_volume_ratio = 1.15  # current/baseline ratio gate for breakouts
+bos_close_buffer_atr = 0.10           # BOS close confirmation buffer (ATR)
+choch_close_buffer_atr = 0.12         # ChoCh close confirmation buffer (ATR)
+liquidity_equal_atr = 0.20            # equal highs/lows tolerance (ATR)
+ob_validation_vol_ratio = 1.10        # order-block volume confirmation gate
+momentum_decay_bars = 8               # bars after which momentum decays to 0
+
+[strategy]
+min_structure_edge = 0.15             # min normalized long−short structural edge
+
+[entry_plan]
+ew_micro_1_atr = 0.06                 # tightest entry-window buffer (ATR)
+ew_micro_2_atr = 0.12                 # mid entry-window buffer (ATR)
+ew_micro_3_atr = 0.20                 # widest entry-window buffer (ATR)
+ew_session_open_buffer_atr = 0.18     # extra buffer at session boundaries (ATR)
+min_rr_trade = 1.6                    # minimum TP1/SL risk-reward to emit
+
+[assets.altcoin]
+alt_ew_vol_compress = 0.85            # EW compression for thin alts
+alt_tp_thin_compress = 0.78           # TP compression for thin alts
+alt_sl_wick_buffer_atr = 0.35         # extra SL buffer over wicks
+alt_trap_sensitivity = 1.10           # trap-guard sensitivity multiplier
+alt_min_break_body_atr = 0.55         # min breakout candle body (ATR)
+alt_max_chase_atr = 0.60              # max chase distance beyond ideal entry
+alt_ltf_weight = 1.20                 # LTF consensus weight multiplier
+alt_htf_relax = 0.85                  # HTF bias relaxation
+alt_profile = "AUTO"                  # AUTO | MAJOR | MID | MEME
+
+[assets.gold]
+gold_session_bias_mode = "hybrid"     # session | proxy | hybrid
+gold_news_window_atr = 1.80           # extra ATR allowance during news windows
+gold_proxy_min_alignment = 0.65       # 0..1 XAU proxy alignment required
+
+[assets.forex]
+forex_rr_asia = 1.40
+forex_rr_europe = 1.80
+forex_rr_usa = 2.00
+forex_block_counter_htf = true        # block LTF signal that opposes HTF bias
+
+[assets.stocks_idx]
+idx_rvol_min = 1.10                   # min RVOL to qualify a setup
+idx_cmf_length = 20                   # CMF length used by the IDX evaluator
+idx_obv_slope_bars = 10               # OBV slope window
+idx_value_traded_min = 500000000.0    # min value-traded per bar (IDR)
+idx_rs_min = 0.0                      # min RS vs IHSG (≤0 disables the gate)
+idx_downside_risk_threshold = 1.35    # downside-risk downgrade threshold (ATR)
+```
+
+Per-asset overrides are loaded with `serde(default)` — an entirely missing
+`[assets]` section falls back to the Pine baseline.
 
 ### Data source configuration
 

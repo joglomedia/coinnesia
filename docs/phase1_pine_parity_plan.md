@@ -349,7 +349,7 @@ Acceptance:
 - API endpoint returns 200 with full panel JSON.
 - Persistence migration adds `panel_report jsonb` column without breaking existing rows.
 
-### 1.7.12 Configuration Additions
+### 1.7.12 Configuration Additions — Done 2026-06-02
 
 Estimate: 3–4 hours.
 
