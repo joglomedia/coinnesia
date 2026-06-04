@@ -375,6 +375,61 @@ used by `scan-once`.
 
 ---
 
+### `export-panel`
+
+**Purpose:** Print the V61.x reference panel for a single symbol/timeframe as
+JSON on stdout (sub-phase 1.7.13). Used to diff Rust output against captured
+TradingView Pine panel output during parity work.
+
+```bash
+cargo run -- export-panel BTCUSDT 1d > /tmp/btc_rust.json
+diff /tmp/btc_pine.json /tmp/btc_rust.json
+```
+
+The symbol must already exist in `[[symbols]]` — the command narrows the config
+to that one entry, swaps in the requested `timeframe`, runs one scan cycle, and
+emits the resulting `PanelReport` as pretty JSON. Tracing logs continue to go
+to **stderr** so the stdout payload is pipe-clean for `diff`, `jq`, or
+parity-fixture regeneration.
+
+#### Pine parity capture/replay workflow
+
+The parity test harness lives in `tests/parity.rs` plus
+`tests/parity/<asset>.rs`. Each suite synthesizes a deterministic candle series
+for one asset class, runs the strategy, and compares the live `PanelReport`
+against `tests/fixtures/parity/<asset>.panel.json`.
+
+```bash
+# Run all five parity suites (BTC V61.9, Altcoin V62, Gold V1, Forex V58, IDX V5)
+cargo test --test parity
+
+# Regenerate the on-disk JSON fixtures after a deliberate Pine update
+UPDATE_PARITY_FIXTURES=1 cargo test --test parity
+```
+
+Two reference sources of truth feed this loop:
+
+1. The **deterministic candle generator** in `tests/parity/common.rs` —
+   committed code, reviewable on every change, anchored at `2026-01-06T00:00Z`.
+2. The **captured panel JSON** in `tests/fixtures/parity/*.panel.json` —
+   committed snapshots. Drift from these triggers a test failure with a
+   side-by-side JSON diff.
+
+To compare against an actual TradingView panel snapshot:
+
+1. In Pine, run the reference indicator on the same candle range used by the
+   fixture (export with TradingView's "Export chart data → CSV" feature).
+2. Convert the CSV to the harness's candle format (see
+   `tests/parity/common.rs::synthesize_candles` for the shape) and replace the
+   synthetic series in the relevant `tests/parity/<asset>.rs` test.
+3. Capture the Pine panel rows manually into a JSON document matching
+   `PanelReport`'s serde shape (see existing fixtures in
+   `tests/fixtures/parity/`).
+4. Re-run `cargo test --test parity`. Any structural diff is reported with the
+   captured-vs-live JSON side-by-side.
+
+---
+
 ## 4. HTTP API Reference
 
 Enable the API in config:

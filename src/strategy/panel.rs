@@ -74,6 +74,10 @@ impl DeepStatus {
 #[serde(rename_all = "SCREAMING_SNAKE_CASE")]
 pub enum TradeScoreStatus {
     NoDirection,
+    /// Sub-phase 1.7.14 Gap 6 — TRAP status wins over `NoDirection` when the
+    /// trap guard is actively blocking emission. Pine renders this as the
+    /// red `TRAP` chip next to the trade score even on `NO TRADE` bars.
+    TrapBlocked,
     Weak,
     Ok,
     Strong,
@@ -83,6 +87,7 @@ impl TradeScoreStatus {
     pub fn label(self) -> &'static str {
         match self {
             Self::NoDirection => "NO DIRECTION",
+            Self::TrapBlocked => "TRAP",
             Self::Weak => "WEAK",
             Self::Ok => "OK",
             Self::Strong => "STRONG",
@@ -197,6 +202,11 @@ pub struct PanelInputs<'a> {
     pub reason: &'a str,
     /// Asset-class-specific extras populated from the active IndicatorSnapshot.
     pub extras: PanelAssetExtras,
+    /// Sub-phase 1.7.14 Gap 2 — Pine BIAS / CONF render the vote ratio across
+    /// the hard layers, not the weighted analog `confidence` score. These two
+    /// fields carry that ratio as 0..100 percentages for direct display.
+    pub long_vote_pct: f64,
+    pub short_vote_pct: f64,
 }
 
 impl PanelReport {
@@ -205,11 +215,23 @@ impl PanelReport {
     /// without crashing on partial data.
     pub fn build(inputs: &PanelInputs<'_>) -> Self {
         let trade_score = compute_trade_score(inputs);
-        let trade_score_status = trade_score_status(trade_score, inputs.state);
+        let trade_score_status =
+            trade_score_status(trade_score, inputs.state, inputs.trap.blocks_signal);
         let putusan_text = putusan_text(inputs.state).to_owned();
-        let bias_text = bias_text(inputs.state, inputs.direction, inputs.confidence);
-        let conf_text = conf_text(inputs.state, inputs.confidence, inputs.min_confidence);
-        let session_text = session_text(inputs.session);
+        let bias_text = bias_text(
+            inputs.state,
+            inputs.direction,
+            inputs.long_vote_pct,
+            inputs.short_vote_pct,
+        );
+        let conf_text = conf_text(
+            inputs.state,
+            inputs.direction,
+            inputs.long_vote_pct,
+            inputs.short_vote_pct,
+            inputs.min_confidence,
+        );
+        let session_text = session_text(inputs.session, inputs.asset_class, &inputs.extras);
         let flow_text = flow_text(inputs.flow_state, inputs.flow_trap_block).to_owned();
         let trap_gate_text = trap_gate_text(inputs).to_owned();
 
@@ -385,7 +407,17 @@ fn compute_trade_score(inputs: &PanelInputs<'_>) -> u32 {
     raw.clamp(0.0, 100.0).round() as u32
 }
 
-fn trade_score_status(score: u32, state: SignalState) -> TradeScoreStatus {
+fn trade_score_status(
+    score: u32,
+    state: SignalState,
+    trap_blocks_signal: bool,
+) -> TradeScoreStatus {
+    // Sub-phase 1.7.14 Gap 6 — TRAP status takes precedence on Wait/Freeze
+    // bars where the trap guard is the reason emission is blocked. Pine
+    // surfaces this even when PUTUSAN = NO TRADE so the user sees *why*.
+    if trap_blocks_signal {
+        return TradeScoreStatus::TrapBlocked;
+    }
     if matches!(state, SignalState::Wait | SignalState::Freeze) {
         return TradeScoreStatus::NoDirection;
     }
@@ -398,41 +430,70 @@ fn trade_score_status(score: u32, state: SignalState) -> TradeScoreStatus {
     }
 }
 
-/// Pine `BIAS` row. Long signals report "BELI {long%}", short "JUAL {short%}",
-/// Wait/Freeze report whichever side is leading with a `MAP` prefix or
-/// "SIDEWAYS" when neither side has confidence to spare.
-fn bias_text(state: SignalState, direction: SignalDirection, conf: ConfidenceScore) -> String {
+/// Pine `BIAS` row. Long signals report `BELI {long_vote%}`, Short
+/// `JUAL {short_vote%}`. Wait/Freeze prefix with `MAP` and show whichever
+/// side has more vote support, or `SIDEWAYS` when neither side has any
+/// hard-layer support. Sub-phase 1.7.14 Gap 2 — the percentage is the
+/// vote-ratio over the hard layers (Pine semantics), not the weighted
+/// analog `confidence` score.
+fn bias_text(
+    state: SignalState,
+    direction: SignalDirection,
+    long_vote_pct: f64,
+    short_vote_pct: f64,
+) -> String {
     match state {
-        SignalState::Long => format!("BELI {:.0}%", conf.long),
-        SignalState::Short => format!("JUAL {:.0}%", conf.short),
+        SignalState::Long => format!("BELI {:.0}%", long_vote_pct),
+        SignalState::Short => format!("JUAL {:.0}%", short_vote_pct),
         SignalState::Freeze => "SIDEWAYS (FREEZE)".to_owned(),
         SignalState::Wait => match direction {
-            SignalDirection::Long => format!("MAP LONG {:.0}%", conf.long),
-            SignalDirection::Short => format!("MAP SHORT {:.0}%", conf.short),
+            SignalDirection::Long => format!("MAP LONG {:.0}%", long_vote_pct),
+            SignalDirection::Short => format!("MAP SHORT {:.0}%", short_vote_pct),
             SignalDirection::Wait => {
-                if conf.long.max(conf.short) <= 1.0 {
+                if long_vote_pct.max(short_vote_pct) <= f64::EPSILON {
                     "SIDEWAYS".to_owned()
-                } else if conf.long >= conf.short {
-                    format!("MAP LONG {:.0}%", conf.long)
+                } else if long_vote_pct >= short_vote_pct {
+                    format!("MAP LONG {:.0}%", long_vote_pct)
                 } else {
-                    format!("MAP SHORT {:.0}%", conf.short)
+                    format!("MAP SHORT {:.0}%", short_vote_pct)
                 }
             }
         },
     }
 }
 
-/// Pine `CONF` row. Long state: "BELI {long}% | MIN {threshold}%".
-/// Wait/Freeze: "BELI {long}% | JUAL {short}%".
-fn conf_text(state: SignalState, conf: ConfidenceScore, min: f64) -> String {
-    match state {
-        SignalState::Long => format!("BELI {:.0}% | MIN {:.0}%", conf.long, min),
-        SignalState::Short => format!("JUAL {:.0}% | MIN {:.0}%", conf.short, min),
-        _ => format!("BELI {:.0}% | JUAL {:.0}%", conf.long, conf.short),
+/// Pine `CONF` row. Long: `BELI {long_vote%} | MIN {threshold%}`.
+/// Short: `JUAL {short_vote%} | MIN {threshold%}`. Wait/Freeze: mirror the
+/// dominant side rather than printing both — matches the Pine reference
+/// panel which only shows the bias side + MIN threshold even on `NO TRADE`.
+fn conf_text(
+    state: SignalState,
+    direction: SignalDirection,
+    long_vote_pct: f64,
+    short_vote_pct: f64,
+    min: f64,
+) -> String {
+    let dominant_long = match state {
+        SignalState::Long => true,
+        SignalState::Short => false,
+        _ => match direction {
+            SignalDirection::Long => true,
+            SignalDirection::Short => false,
+            SignalDirection::Wait => long_vote_pct >= short_vote_pct,
+        },
+    };
+    if dominant_long {
+        format!("BELI {:.0}% | MIN {:.0}%", long_vote_pct, min)
+    } else {
+        format!("JUAL {:.0}% | MIN {:.0}%", short_vote_pct, min)
     }
 }
 
-fn session_text(session: MarketSession) -> String {
+fn session_text(
+    session: MarketSession,
+    asset_class: AssetClass,
+    extras: &PanelAssetExtras,
+) -> String {
     let label = match session {
         MarketSession::Asia => "ASIA",
         MarketSession::Europe => "EROPA",
@@ -440,17 +501,39 @@ fn session_text(session: MarketSession) -> String {
         MarketSession::Idx => "IDX",
         MarketSession::RolloverAvoid => "ROLLOVER",
     };
-    format!("{} | {}", label, session_time_range_string(session))
+    let mut text = format!("{} | {}", label, session_time_range_string(session));
+
+    // Sub-phase 1.7.14 Gap 3 — per-asset SESI annotations. Pine's Gold V1
+    // panel appends `THIN EXCHANGE` whenever the active session lacks COMEX
+    // floor depth (everything outside the USA overlap) and a `XAU JUAL` /
+    // `XAU BELI` chip driven by the XAUUSD proxy bias. Other asset classes
+    // leave the SESI row at its base label.
+    if asset_class == AssetClass::Gold {
+        if matches!(
+            session,
+            MarketSession::Asia | MarketSession::Europe | MarketSession::RolloverAvoid
+        ) {
+            text.push_str(" | THIN EXCHANGE");
+        }
+        match extras.xauusd_bias {
+            Some(SignalDirection::Long) => text.push_str(" | XAU BELI"),
+            Some(SignalDirection::Short) => text.push_str(" | XAU JUAL"),
+            _ => {}
+        }
+    }
+    text
 }
 
 fn flow_text(flow: FlowState, flow_trap_block: bool) -> &'static str {
+    // Sub-phase 1.7.14 Gap 5 — strings ported byte-for-byte from the Pine
+    // reference panel so the FLOW row matches captured TradingView snapshots.
     if flow_trap_block {
         return "Waspada stop hunt";
     }
     match flow {
-        FlowState::Low => "Sepi rawan fake move",
-        FlowState::Mid => "Aliran normal",
-        FlowState::High => "Aliran kuat",
+        FlowState::Low => "Sepi \u{2192} fakeout risiko tinggi",
+        FlowState::Mid => "Normal/sedang, TP harus realistis",
+        FlowState::High => "Aliran kuat, TP boleh agresif",
     }
 }
 
@@ -550,9 +633,12 @@ fn entry_window(inputs: &PanelInputs<'_>) -> Option<TimestampRange> {
         return None;
     }
     let _ = plan; // band geometry currently unused in the time projection
+    // Sub-phase 1.7.14 Gap 4 — Pine WAKTU ENTRY is the next single bar (same
+    // shape as NEXT TRADE). The previous 2-bar `from = latest.ts` window
+    // started a bar early and ran two bars long.
     let span = timeframe_minutes(inputs.timeframe).max(1);
-    let from = inputs.latest.ts;
-    let until = from + Duration::minutes(span as i64 * 2);
+    let from = inputs.latest.ts + Duration::minutes(span as i64);
+    let until = from + Duration::minutes(span as i64);
     Some(TimestampRange::new(from, until))
 }
 
@@ -567,8 +653,12 @@ fn next_trade_window(inputs: &PanelInputs<'_>) -> Option<TimestampRange> {
             Some(TimestampRange::new(from, until))
         }
         SignalState::Wait => {
+            // Sub-phase 1.7.14 Gap 4 — Pine renders NEXT TRADE as the very next
+            // candle window. The previous 3-bar span widened the WAKTU/NEXT
+            // entry window by 4×, drifting the right bound several days past
+            // Pine's reference. One bar matches the screenshot tooling.
             let from = inputs.latest.ts + Duration::minutes(span as i64);
-            let until = inputs.latest.ts + Duration::minutes(span as i64 * 4);
+            let until = from + Duration::minutes(span as i64);
             Some(TimestampRange::new(from, until))
         }
     }
@@ -672,6 +762,8 @@ mod tests {
             plan,
             reason: "test",
             extras: PanelAssetExtras::default(),
+            long_vote_pct: 0.0,
+            short_vote_pct: 0.0,
         }
     }
 

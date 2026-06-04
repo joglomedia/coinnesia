@@ -203,7 +203,8 @@ Headline sub-phases (full breakdown in the parity plan doc):
 - 1.7.10 `PanelReport` struct (TRADE SCORE, BIAS, FLOW, EW status, DEEP RISK status, TRAP GATE, ENTRY IDEAL, WAKTU ENTRY, SL width, TP probability, ETA TP1-3, RECLAIM). **Done 2026-05-29.**
 - 1.7.11 Alert & API surfaces consuming the panel. **Done 2026-06-02.**
 - 1.7.12 Configuration additions (V61.4-V62.0 knobs + per-asset overrides). **Done 2026-06-02.**
-- 1.7.13 Parity test harness against captured Pine fixtures.
+- 1.7.13 Parity test harness against captured Pine fixtures. **Done 2026-06-03.**
+- 1.7.14 Panel Pine-parity polish — close the six gaps surfaced by the OANDA:XAUUSD 1D diff on 2026-06-03: entry plan on Wait paths (Gap 1), NEXT TRADE window width (Gap 4), FLOW text phrasing (Gap 5), TRAP trade-score status (Gap 6), per-asset SESI annotations (Gap 3), vote-ratio BIAS/CONF rendering (Gap 2). **Done 2026-06-04 (Gaps 1, 4, 5 landed 2026-06-03; Gaps 2, 3, 6 landed 2026-06-04).** See `docs/phase1_pine_parity_plan.md` § 1.7.14.
 
 ### Changes
 

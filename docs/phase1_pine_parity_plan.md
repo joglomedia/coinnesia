@@ -376,7 +376,7 @@ Acceptance:
 - All new keys have defaults matching Pine inputs.
 - Per-asset overrides resolve correctly.
 
-### 1.7.13 Parity Test Harness
+### 1.7.13 Parity Test Harness — Done 2026-06-03
 
 Estimate: 6–8 hours.
 
@@ -391,6 +391,73 @@ Acceptance:
 
 - `cargo test parity` runs all five asset parity suites green.
 - A documented diff command shows zero structural differences between Rust panel JSON and the captured Pine panel JSON.
+
+### 1.7.14 Panel Pine-parity polish — Done 2026-06-04
+
+Estimate: 6–8 hours total. Tracked from the OANDA:XAUUSD 1D diff session on
+2026-06-03 (see `docs/manual.md` § panel diff workflow). Each gap below is
+sized independently so the work can land in 2–3 commits.
+
+Gaps to close (in recommended landing order):
+
+- **Gap 1 — Entry plan on Wait paths (~2–3h). Done 2026-06-03.** Lifted the
+  `EntryPlanCalculator` projection out of the `Long`/`Short` emission branch
+  in `src/strategy/signals.rs::evaluate_inner`. A "MAP" plan is now computed
+  once after confidence resolution and threaded into every downstream
+  `Wait` short-circuit via `PanelInputs.plan`, so `entry_ideal`,
+  `waktu_entry`, `sl_*`, `tp*_prob/label`, `eta_tp*`, `reclaim_price`, and
+  the EW band prices populate on `NO TRADE` panels.
+- **Gap 4 — NEXT TRADE / WAKTU ENTRY window width (~5 min). Done 2026-06-03.**
+  `panel.rs::next_trade_window` (Wait branch) and `panel.rs::entry_window`
+  both rewritten to a 1-bar window starting at the next bar open — matches
+  the Pine reference panel exactly.
+- **Gap 5 — FLOW text Pine-exact phrasing (~5 min). Done 2026-06-03.**
+  Replaced the three `flow_text()` strings with Pine wording:
+  `Sepi → fakeout risiko tinggi`, `Normal/sedang, TP harus realistis`,
+  `Aliran kuat, TP boleh agresif`.
+- **Gap 6 — `TRADE SCORE` `TRAP` status (~30 min). Done 2026-06-04.**
+  Added a `TradeScoreStatus::TrapBlocked` variant in `src/strategy/panel.rs`
+  that wins over `NoDirection` whenever `inputs.trap.blocks_signal` is set.
+  The variant renders as `TRAP` in Pine-matching uppercase.
+- **Gap 3 — Per-asset `SESI` annotations (~1–2h). Done 2026-06-04.**
+  Threaded `AssetClass` and `PanelAssetExtras` into
+  `panel.rs::session_text`. Gold panels now append `| THIN EXCHANGE` when
+  the session is Asia / Europe / Rollover (no COMEX overlap) plus a
+  `| XAU BELI` or `| XAU JUAL` chip driven by the XAUUSD proxy bias.
+- **Gap 2 — Vote-ratio `BIAS` / `CONF` rendering (~3–4h). Done 2026-06-04.**
+  Added `layers_passed` / `layers_total` to `DirectionEvaluation`, a
+  `vote_ratio_pct` helper in `src/strategy/signals.rs`, and
+  `long_vote_pct` / `short_vote_pct` on `PanelInputs`.
+  `panel.rs::bias_text` / `conf_text` now render Pine vote-ratio
+  percentages while the weighted analog `confidence` score still drives
+  the `MIN ≥ threshold` gate. CONF on `Wait` paths mirrors the dominant
+  side (no more `BELI X% | JUAL Y%` split) to match Pine.
+
+Tasks:
+
+- Implement Gap 1 + Gap 4 + Gap 5 in one commit; refresh the five
+  `tests/fixtures/parity/*.panel.json` snapshots via
+  `UPDATE_PARITY_FIXTURES=1 cargo test --test parity`.
+- Implement Gap 6 + Gap 3 in a follow-up commit; refresh fixtures.
+- Implement Gap 2 last; refresh fixtures.
+- Document the closed gaps in `docs/manual.md` § parity diff workflow and
+  re-run `cargo run -- export-panel OANDA:XAUUSD 1d` to verify the diff
+  against the Pine reference shrinks toward zero.
+
+Acceptance:
+
+- `cargo run -- export-panel OANDA:XAUUSD 1d` populates `entry_ideal`,
+  `waktu_entry`, `sl_*`, `tp*_prob/label`, `eta_tp*`, and `reclaim_price`
+  on `Wait` paths.
+- `next_trade_window` width is exactly one timeframe span on `Wait` paths.
+- `flow_text` matches Pine strings byte-for-byte.
+- `trade_score_status` reports `TRAP_BLOCKED` whenever
+  `inputs.trap.blocks_signal` is set.
+- `session_text` for Gold panels appends `THIN EXCHANGE` and the XAU
+  buy/sell tag in the active session.
+- `bias_text` / `conf_text` percentages match Pine's vote-ratio semantics
+  on the captured OANDA:XAUUSD 1D fixture (within ±1 percentage point).
+- `cargo test --test parity` passes against refreshed fixtures.
 
 ## Delivery Sequencing
 

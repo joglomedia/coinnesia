@@ -344,14 +344,14 @@ timeframes = ["15m", "1h", "4h", "1d"]
 
 [[symbols]]
 symbol = "PAXGUSDT"
-asset_class = "altcoin"
+asset_class = "gold"
 exchange = "binance"
 data_source = "binance"
 timeframes = ["15m", "1h", "4h", "1d"]
 
 [[symbols]]
-symbol = "XAUUSD"
-asset_class = "forex"
+symbol = "OANDA:XAUUSD"
+asset_class = "gold"
 exchange = ""
 data_source = "tradingview"
 timeframes = ["15m", "1h", "4h", "1d"]

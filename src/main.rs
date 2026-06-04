@@ -48,6 +48,19 @@ enum Command {
     },
     /// Run the backtest scaffold.
     Backtest,
+    /// Export the V61.x reference panel for a single symbol/timeframe as JSON.
+    ///
+    /// Use this for diffing against captured Pine reference output during the
+    /// parity workflow (sub-phase 1.7.13). The command runs one scan cycle
+    /// over a config narrowed to the requested symbol, then prints the
+    /// resulting `PanelReport` as pretty JSON on stdout. Stderr-only logging
+    /// keeps the JSON pristine for piping into `diff`/`jq`.
+    ExportPanel {
+        /// Exchange-native symbol (e.g. `BTCUSDT`, `XAUUSD`, `IDX:COMPOSITE`).
+        symbol: String,
+        /// Primary timeframe to scan (`15m`, `1h`, `4h`, `1d`).
+        timeframe: String,
+    },
 }
 
 #[tokio::main]
@@ -138,6 +151,52 @@ async fn main() -> Result<()> {
             coinnesia::backtest::BacktestEngine::new(config)
                 .run()
                 .await?;
+        }
+        Command::ExportPanel { symbol, timeframe } => {
+            let mut narrowed = config.clone();
+            // Keep only the symbol under inspection so the scan cycle ignores
+            // unrelated configured symbols and the resulting `ScanReport`
+            // contains exactly one signal/panel pair to export.
+            let target = narrowed
+                .symbols
+                .iter()
+                .find(|s| s.symbol == symbol)
+                .cloned()
+                .ok_or_else(|| {
+                    anyhow::anyhow!(
+                        "symbol {symbol} not present in [[symbols]] — add it to the config first"
+                    )
+                })?;
+            let mut target = target;
+            target.timeframes = vec![timeframe.clone()];
+            narrowed.symbols = vec![target];
+
+            let db = Db::connect_optional(&narrowed.database).await?;
+            let cache = Cache::connect_optional(&narrowed.cache).await?;
+            let scanner = Scanner::with_resources(
+                narrowed.clone(),
+                Arc::new(PerSymbolMarketData::from_config(&narrowed)),
+                db,
+                cache,
+            );
+            let report = scanner.scan_once().await?;
+            let signal = report
+                .signals
+                .into_iter()
+                .find(|s| s.symbol == symbol)
+                .ok_or_else(|| {
+                    anyhow::anyhow!(
+                        "scan completed but emitted no signal for {symbol} — likely insufficient candles or data-source error"
+                    )
+                })?;
+            let panel = signal.panel.as_ref().ok_or_else(|| {
+                anyhow::anyhow!(
+                    "signal emitted for {symbol} but contained no panel — strategy did not populate the V61.x reference panel"
+                )
+            })?;
+            // stdout = JSON only, stderr = logs. Pipe-friendly.
+            let pretty = serde_json::to_string_pretty(panel)?;
+            println!("{pretty}");
         }
     }
 

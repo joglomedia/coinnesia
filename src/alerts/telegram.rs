@@ -417,7 +417,7 @@ mod tests {
             bias_text: "BELI 70%".to_owned(),
             conf_text: "BELI 70% | MIN 50%".to_owned(),
             session_text: "USA | 20:30-02:59 WIB".to_owned(),
-            flow_text: "Aliran normal".to_owned(),
+            flow_text: "Normal/sedang, TP harus realistis".to_owned(),
             flow_state: FlowState::Mid,
             ew1_status: EwStatus::Valid,
             ew2_status: EwStatus::Watch,

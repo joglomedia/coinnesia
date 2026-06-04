@@ -21,7 +21,8 @@
       "Bash(grep -v \"^$\")",
       "WebFetch(domain:twelvedata.com)",
       "Bash(python3 *)",
-      "WebFetch(domain:support.twelvedata.com)"
+      "WebFetch(domain:support.twelvedata.com)",
+      "Bash(UPDATE_PARITY_FIXTURES=1 cargo test --test parity)"
     ]
   }
 }

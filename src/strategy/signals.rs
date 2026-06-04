@@ -234,6 +234,8 @@ impl<'a> SignalGenerator<'a> {
         let build_panel = |state: SignalState,
                            direction: SignalDirection,
                            confidence: ConfidenceScore,
+                           long_vote_pct: f64,
+                           short_vote_pct: f64,
                            plan: Option<&EntryPlan>,
                            reason: &str|
          -> PanelReport {
@@ -262,6 +264,8 @@ impl<'a> SignalGenerator<'a> {
                 plan,
                 reason,
                 extras: extras_for_panel,
+                long_vote_pct,
+                short_vote_pct,
             };
             PanelReport::build(&inputs)
         };
@@ -277,6 +281,8 @@ impl<'a> SignalGenerator<'a> {
                 SignalState::Freeze,
                 SignalDirection::Wait,
                 ConfidenceScore::neutral(),
+                0.0,
+                0.0,
                 None,
                 &reason,
             );
@@ -299,6 +305,8 @@ impl<'a> SignalGenerator<'a> {
                 SignalState::Freeze,
                 SignalDirection::Wait,
                 ConfidenceScore::neutral(),
+                0.0,
+                0.0,
                 None,
                 "shock_regime",
             );
@@ -321,6 +329,8 @@ impl<'a> SignalGenerator<'a> {
                 SignalState::Wait,
                 SignalDirection::Wait,
                 ConfidenceScore::neutral(),
+                0.0,
+                0.0,
                 None,
                 &reason,
             );
@@ -359,12 +369,47 @@ impl<'a> SignalGenerator<'a> {
         let confidence = ConfidenceScore::from_sides(long.score, short.score);
         let threshold = threshold_for_timeframe(timeframe, &self.config.strategy);
 
+        // Sub-phase 1.7.14 Gap 2 — Pine BIAS/CONF render the vote ratio across
+        // the hard layers, not the weighted analog confidence score. Compute
+        // both ratios as 0..100 percentages so every downstream `build_panel`
+        // call surfaces Pine-equivalent numbers.
+        let long_vote_pct = vote_ratio_pct(&long);
+        let short_vote_pct = vote_ratio_pct(&short);
+
+        // Sub-phase 1.7.14 Gap 1 — hypothetical "MAP" entry plan computed as
+        // soon as confidence is known so every downstream Wait short-circuit
+        // can populate the EW/SL/TP/RECLAIM panel rows. Pine renders these as
+        // MAP/WAIT until a trigger fires; the Rust port previously left them
+        // null because the plan was only computed inside the Long/Short
+        // success branch. The map_direction picks the higher-confidence side
+        // so the projection lines up with the bias the panel is already
+        // showing.
+        let map_direction = if confidence.long >= confidence.short {
+            SignalDirection::Long
+        } else {
+            SignalDirection::Short
+        };
+        let map_plan_ctx = build_plan_context(
+            map_direction,
+            &snapshot,
+            session,
+            self.config,
+            confidence.score(map_direction),
+            trap_score_long.max(trap_score_short),
+            &new_state,
+            flow_trap_block,
+        );
+        let map_plan = EntryPlanCalculator::new(&self.config.entry_plan)
+            .calculate_from_context(&map_plan_ctx, snapshot.candles, &self.config.trap_guard);
+
         if long.blocks_signal && short.blocks_signal {
             let panel = build_panel(
                 SignalState::Wait,
                 SignalDirection::Wait,
                 confidence,
-                None,
+                long_vote_pct,
+                short_vote_pct,
+                Some(&map_plan),
                 "trap_guard_blocked",
             );
             return (
@@ -373,7 +418,7 @@ impl<'a> SignalGenerator<'a> {
                     state: SignalState::Wait,
                     confidence,
                     reason: "trap_guard_blocked".to_owned(),
-                    entry_plan: None,
+                    entry_plan: Some(map_plan.clone()),
                     panel: Some(panel),
                 },
                 new_state,
@@ -391,14 +436,22 @@ impl<'a> SignalGenerator<'a> {
             } else {
                 SignalDirection::Short
             };
-            let panel = build_panel(SignalState::Wait, direction, confidence, None, &reason);
+            let panel = build_panel(
+                SignalState::Wait,
+                direction,
+                confidence,
+                long_vote_pct,
+                short_vote_pct,
+                Some(&map_plan),
+                &reason,
+            );
             return (
                 SignalResult {
                     symbol: symbol.to_owned(),
                     state: SignalState::Wait,
                     confidence,
                     reason,
-                    entry_plan: None,
+                    entry_plan: Some(map_plan.clone()),
                     panel: Some(panel),
                 },
                 new_state,
@@ -427,7 +480,9 @@ impl<'a> SignalGenerator<'a> {
                 SignalState::Wait,
                 SignalDirection::Long,
                 confidence,
-                None,
+                long_vote_pct,
+                short_vote_pct,
+                Some(&map_plan),
                 &reason,
             );
             return (
@@ -436,7 +491,7 @@ impl<'a> SignalGenerator<'a> {
                     state: SignalState::Wait,
                     confidence,
                     reason,
-                    entry_plan: None,
+                    entry_plan: Some(map_plan.clone()),
                     panel: Some(panel),
                 },
                 new_state,
@@ -455,7 +510,9 @@ impl<'a> SignalGenerator<'a> {
                 SignalState::Wait,
                 SignalDirection::Short,
                 confidence,
-                None,
+                long_vote_pct,
+                short_vote_pct,
+                Some(&map_plan),
                 &reason,
             );
             return (
@@ -464,7 +521,7 @@ impl<'a> SignalGenerator<'a> {
                     state: SignalState::Wait,
                     confidence,
                     reason,
-                    entry_plan: None,
+                    entry_plan: Some(map_plan.clone()),
                     panel: Some(panel),
                 },
                 new_state,
@@ -483,14 +540,22 @@ impl<'a> SignalGenerator<'a> {
             } else {
                 SignalDirection::Short
             };
-            let panel = build_panel(SignalState::Wait, direction, confidence, None, &reason);
+            let panel = build_panel(
+                SignalState::Wait,
+                direction,
+                confidence,
+                long_vote_pct,
+                short_vote_pct,
+                Some(&map_plan),
+                &reason,
+            );
             return (
                 SignalResult {
                     symbol: symbol.to_owned(),
                     state: SignalState::Wait,
                     confidence,
                     reason,
-                    entry_plan: None,
+                    entry_plan: Some(map_plan.clone()),
                     panel: Some(panel),
                 },
                 new_state,
@@ -513,14 +578,22 @@ impl<'a> SignalGenerator<'a> {
                 "micro_trend_override direction={direction:?} micro={:?}",
                 snapshot.micro_trend
             );
-            let panel = build_panel(SignalState::Wait, direction, confidence, None, &reason);
+            let panel = build_panel(
+                SignalState::Wait,
+                direction,
+                confidence,
+                long_vote_pct,
+                short_vote_pct,
+                Some(&map_plan),
+                &reason,
+            );
             return (
                 SignalResult {
                     symbol: symbol.to_owned(),
                     state: SignalState::Wait,
                     confidence,
                     reason,
-                    entry_plan: None,
+                    entry_plan: Some(map_plan.clone()),
                     panel: Some(panel),
                 },
                 new_state,
@@ -553,14 +626,22 @@ impl<'a> SignalGenerator<'a> {
                 "flip_confirm_pending bars={}/{} direction={direction:?}",
                 new_state.since_flip_bars, flip_confirm
             );
-            let panel = build_panel(SignalState::Wait, direction, confidence, None, &reason);
+            let panel = build_panel(
+                SignalState::Wait,
+                direction,
+                confidence,
+                long_vote_pct,
+                short_vote_pct,
+                Some(&map_plan),
+                &reason,
+            );
             return (
                 SignalResult {
                     symbol: symbol.to_owned(),
                     state: SignalState::Wait,
                     confidence,
                     reason,
-                    entry_plan: None,
+                    entry_plan: Some(map_plan.clone()),
                     panel: Some(panel),
                 },
                 new_state,
@@ -585,6 +666,8 @@ impl<'a> SignalGenerator<'a> {
                 SignalState::Wait,
                 direction,
                 confidence,
+                long_vote_pct,
+                short_vote_pct,
                 Some(&plan),
                 &reason,
             );
@@ -618,6 +701,8 @@ impl<'a> SignalGenerator<'a> {
                 SignalState::Wait,
                 direction,
                 confidence,
+                long_vote_pct,
+                short_vote_pct,
                 Some(&plan),
                 &reason,
             );
@@ -669,6 +754,8 @@ impl<'a> SignalGenerator<'a> {
                 plan: Some(&plan),
                 reason: &reason,
                 extras: extras_for_panel,
+                long_vote_pct,
+                short_vote_pct,
             };
             PanelReport::build(&inputs)
         };
@@ -998,6 +1085,25 @@ pub(crate) struct DirectionEvaluation {
     pub(crate) passes: bool,
     pub(crate) blocks_signal: bool,
     pub(crate) reason: String,
+    /// Sub-phase 1.7.14 Gap 2 — number of hard layers that voted in the
+    /// direction this evaluation was run for. Pine renders BIAS / CONF as the
+    /// vote ratio (`layers_passed / layers_total`), independent of the
+    /// weighted analog score used for the MIN threshold gate.
+    pub(crate) layers_passed: u32,
+    pub(crate) layers_total: u32,
+}
+
+/// Sub-phase 1.7.14 Gap 2 — Pine vote-ratio percentage for the BIAS/CONF
+/// panel rows. Returns `layers_passed / layers_total * 100`, or `0.0` when
+/// the evaluator has not yet tallied any layers (defensive: a fresh
+/// `DirectionEvaluation` cannot have a non-zero numerator with zero
+/// denominator).
+fn vote_ratio_pct(eval: &DirectionEvaluation) -> f64 {
+    if eval.layers_total == 0 {
+        0.0
+    } else {
+        (eval.layers_passed as f64 / eval.layers_total as f64) * 100.0
+    }
 }
 
 pub(crate) fn evaluate_direction(
@@ -1105,6 +1211,22 @@ pub(crate) fn evaluate_direction(
 
     let trap = evaluate_trap_guard(snapshot.candles, &config.trap_guard, direction);
     score = (score - trap.penalty).clamp(0.0, 100.0);
+    // Sub-phase 1.7.14 Gap 2 — Pine BIAS/CONF surface the vote ratio over the
+    // hard layers, not the weighted analog score. Tally how many of the eight
+    // hard layers voted in this direction. `htf_bias` / `ema_htf` /
+    // `regime_session` are explicit gates; the rest are the original six.
+    let hard_votes = [
+        trend,
+        htf_bias,
+        ema_htf,
+        momentum,
+        volume,
+        entry,
+        anti_trap,
+        regime_session,
+    ];
+    let layers_total = hard_votes.len() as u32;
+    let layers_passed = hard_votes.iter().filter(|&&v| v).count() as u32;
     DirectionEvaluation {
         score,
         passes: trend && momentum && volume && entry && anti_trap && regime_session,
@@ -1114,6 +1236,8 @@ pub(crate) fn evaluate_direction(
         } else {
             missing.join("|")
         },
+        layers_passed,
+        layers_total,
     }
 }
 
