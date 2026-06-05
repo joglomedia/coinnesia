@@ -459,6 +459,53 @@ Acceptance:
   on the captured OANDA:XAUUSD 1D fixture (within ±1 percentage point).
 - `cargo test --test parity` passes against refreshed fixtures.
 
+### 1.7.15 Panel price-field exposure — Done 2026-06-05
+
+Estimate: ~1 hour. Driven by the second OANDA:XAUUSD 1D diff session
+(2026-06-04): the JSON export populated `ew*_status`, `deep_status`,
+`sl_atr_distance`, and `tp*_prob/label`, but never the actual prices, so
+the Pine rows `EW1 = 4496.885 | TOUCHED`, `SL = 4764.866 | 2.64 ATR WIDE`,
+and `TP1 = 4459.893 | 0%` had no price half to render on our side.
+
+Scope:
+
+- Added 8 new `Option<f64>` fields to `PanelReport` in
+  `src/strategy/panel.rs`: `ew1_price`, `ew2_price`, `ew3_price`,
+  `deep_price`, `sl_price`, `tp1_price`, `tp2_price`, `tp3_price`. Each
+  is populated from the threaded `EntryPlan` (real or `map_plan` from
+  sub-phase 1.7.14 Gap 1) — `ew*_price` are band midpoints,
+  `deep_price` is the deep_add midpoint, `sl_price` mirrors
+  `plan.stop_loss.price`, and the TP prices come from
+  `plan.take_profits.tp1/tp2/tp3_optional`. Each field carries
+  `#[serde(default)]` so older fixtures without these keys still parse.
+- Rewrote `src/alerts/telegram.rs::format_panel` so the EW / DEEP RISK /
+  SL / TP rows now read prices from the `PanelReport` directly via two
+  new helpers `format_ew_row` / `format_deep_row`. Previously TP prices
+  came from `signal.entry_plan` — that source is `None` on Wait paths so
+  the prices vanished even though Gap 1 already supplied a `map_plan`.
+- Hardened `tests/parity/common.rs::assert_panel_matches` to compare the
+  serialized JSON text rather than the parsed `Value`.
+  `serde_json::Value` re-parses floats with a slightly less precise
+  algorithm than `f64::from_str`, so values like `65100.114285714284`
+  round-trip through `Value` to a 1-ULP-different f64 and re-serialize
+  as `65100.11428571429`, producing spurious "drift" against fixtures
+  written from the same panel. Text comparison sidesteps the lossy
+  Value roundtrip entirely.
+- Refreshed all 5 `tests/fixtures/parity/*.panel.json` snapshots.
+
+Acceptance:
+
+- `cargo run -- export-panel OANDA:XAUUSD 1d` JSON now includes
+  `ew1_price`, `ew2_price`, `ew3_price`, `deep_price`, `sl_price`,
+  `tp1_price`, `tp2_price`, `tp3_price` whenever an entry plan or MAP
+  plan is available.
+- Telegram panel HTML now renders the full Pine row form, e.g.
+  `<b>EW1</b> 4496.8850 · TOUCHED ✅`,
+  `<b>SL</b> 4764.8660 · WIDE · 2.64 ATR`,
+  `<b>TP1</b> 4459.8930 · 0% LOW PROB`.
+- `cargo test --test parity` passes against refreshed fixtures.
+- `cargo test --lib` still passes (156/156).
+
 ## Delivery Sequencing
 
 Recommended order (dependencies first):

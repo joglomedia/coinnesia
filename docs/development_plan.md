@@ -205,6 +205,7 @@ Headline sub-phases (full breakdown in the parity plan doc):
 - 1.7.12 Configuration additions (V61.4-V62.0 knobs + per-asset overrides). **Done 2026-06-02.**
 - 1.7.13 Parity test harness against captured Pine fixtures. **Done 2026-06-03.**
 - 1.7.14 Panel Pine-parity polish — close the six gaps surfaced by the OANDA:XAUUSD 1D diff on 2026-06-03: entry plan on Wait paths (Gap 1), NEXT TRADE window width (Gap 4), FLOW text phrasing (Gap 5), TRAP trade-score status (Gap 6), per-asset SESI annotations (Gap 3), vote-ratio BIAS/CONF rendering (Gap 2). **Done 2026-06-04 (Gaps 1, 4, 5 landed 2026-06-03; Gaps 2, 3, 6 landed 2026-06-04).** See `docs/phase1_pine_parity_plan.md` § 1.7.14.
+- 1.7.15 Panel price-field exposure — add `ew1_price`/`ew2_price`/`ew3_price`/`deep_price`/`sl_price`/`tp1_price`/`tp2_price`/`tp3_price` to `PanelReport` so the JSON export and Telegram panel render the price half of each Pine row (`EW1 4496.885 | TOUCHED`, `SL 4764.866 | 2.64 ATR WIDE`, etc.). Surfaces values that were already in the threaded `EntryPlan` but never copied into the panel struct. Also switched `tests/parity/common.rs::assert_panel_matches` to text comparison to dodge `serde_json::Value`'s lossy float roundtrip. **Done 2026-06-05.** See `docs/phase1_pine_parity_plan.md` § 1.7.15.
 
 ### Changes
 

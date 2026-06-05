@@ -145,14 +145,17 @@ pub fn evaluate(cfg: &AppConfig, symbol: &str, candles: &[Candle]) -> (SignalRes
 /// then returns early so the test still passes.
 pub fn assert_panel_matches(stem: &str, panel: &PanelReport) {
     let path = fixture_path(stem);
-    let live = serde_json::to_value(panel).expect("panel serializes");
+    // Serialize via `Value` first so the on-disk JSON has sorted keys (the
+    // default `serde_json::Map` is a BTreeMap), keeping the fixture diff
+    // stable across struct-field reorderings.
+    let live_value = serde_json::to_value(panel).expect("panel serializes");
+    let live_pretty = serde_json::to_string_pretty(&live_value).expect("pretty json");
 
     if std::env::var_os("UPDATE_PARITY_FIXTURES").is_some() {
-        let pretty = serde_json::to_string_pretty(&live).expect("pretty json");
         if let Some(parent) = path.parent() {
             fs::create_dir_all(parent).expect("create fixture dir");
         }
-        fs::write(&path, pretty).expect("write fixture");
+        fs::write(&path, &live_pretty).expect("write fixture");
         eprintln!("regenerated parity fixture: {}", path.display());
         return;
     }
@@ -163,15 +166,20 @@ pub fn assert_panel_matches(stem: &str, panel: &PanelReport) {
             path.display()
         )
     });
-    let captured: serde_json::Value =
-        serde_json::from_str(&raw).expect("captured fixture is valid JSON");
 
-    if live != captured {
-        let pretty_live = serde_json::to_string_pretty(&live).unwrap();
-        let pretty_captured = serde_json::to_string_pretty(&captured).unwrap();
+    // Compare the pretty-printed JSON text rather than parsed `Value`s.
+    // serde_json's `Value` deserializer parses floats with a different
+    // rounding algorithm than `f64::from_str`, so a value like
+    // `65100.114285714284` round-trips through `Value` to a 1-ULP-different
+    // f64 and re-serializes as `65100.11428571429` — producing spurious
+    // "drift" against a fixture that was written from the same panel.
+    // Text comparison sidesteps the lossy Value roundtrip entirely.
+    if raw.trim_end() != live_pretty.trim_end() {
         panic!(
-            "parity drift in {}\n=== captured ===\n{pretty_captured}\n=== live ===\n{pretty_live}",
-            path.display()
+            "parity drift in {}\n=== captured ===\n{}\n=== live ===\n{}",
+            path.display(),
+            raw,
+            live_pretty,
         );
     }
 }

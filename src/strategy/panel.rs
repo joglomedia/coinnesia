@@ -174,6 +174,28 @@ pub struct PanelReport {
     pub eta_tp2: Option<TimestampRange>,
     pub eta_tp3: Option<TimestampRange>,
     pub reclaim_price: Option<f64>,
+    // Sub-phase 1.7.15 — Pine reference panel renders each EW / DEEP RISK / SL
+    // / TP row as `{price} | {status}`. The status halves were already
+    // available; these fields surface the price halves so the JSON export,
+    // Telegram formatter, and `/panel/:symbol` page can render the full Pine
+    // row even on Wait bars where the projection comes from `map_plan`.
+    // Each is `None` when no entry plan (real or MAP) was built.
+    #[serde(default)]
+    pub ew1_price: Option<f64>,
+    #[serde(default)]
+    pub ew2_price: Option<f64>,
+    #[serde(default)]
+    pub ew3_price: Option<f64>,
+    #[serde(default)]
+    pub deep_price: Option<f64>,
+    #[serde(default)]
+    pub sl_price: Option<f64>,
+    #[serde(default)]
+    pub tp1_price: Option<f64>,
+    #[serde(default)]
+    pub tp2_price: Option<f64>,
+    #[serde(default)]
+    pub tp3_price: Option<f64>,
     #[serde(default)]
     pub extras: PanelAssetExtras,
 }
@@ -235,50 +257,75 @@ impl PanelReport {
         let flow_text = flow_text(inputs.flow_state, inputs.flow_trap_block).to_owned();
         let trap_gate_text = trap_gate_text(inputs).to_owned();
 
-        let (ew1_status, ew2_status, ew3_status, deep_status, entry_ideal, reclaim_price) =
-            match inputs.plan {
-                Some(plan) => {
-                    let ew1 = ew_status(
-                        inputs.state,
-                        inputs.direction,
-                        inputs.guard,
-                        inputs.latest.close,
-                        inputs.atr,
-                        &plan.ew1,
-                    );
-                    let ew2 = ew_status(
-                        inputs.state,
-                        inputs.direction,
-                        inputs.guard,
-                        inputs.latest.close,
-                        inputs.atr,
-                        &plan.ew2,
-                    );
-                    let ew3 = ew_status(
-                        inputs.state,
-                        inputs.direction,
-                        inputs.guard,
-                        inputs.latest.close,
-                        inputs.atr,
-                        &plan.ew3,
-                    );
-                    let deep = deep_status(inputs.state, inputs.guard, plan);
-                    let reclaim = midpoint(&plan.deep_add);
-                    (ew1, ew2, ew3, deep, Some(plan.entry_ideal), Some(reclaim))
-                }
-                None => (
-                    EwStatus::Map,
-                    EwStatus::Map,
-                    EwStatus::Map,
-                    if inputs.guard.shock_freeze_bars > 0 {
-                        DeepStatus::Invalid
-                    } else {
-                        DeepStatus::Map
-                    },
-                    None,
-                    None,
-                ),
-            };
+        let (
+            ew1_status,
+            ew2_status,
+            ew3_status,
+            deep_status,
+            entry_ideal,
+            reclaim_price,
+            ew1_price,
+            ew2_price,
+            ew3_price,
+            deep_price,
+        ) = match inputs.plan {
+            Some(plan) => {
+                let ew1 = ew_status(
+                    inputs.state,
+                    inputs.direction,
+                    inputs.guard,
+                    inputs.latest.close,
+                    inputs.atr,
+                    &plan.ew1,
+                );
+                let ew2 = ew_status(
+                    inputs.state,
+                    inputs.direction,
+                    inputs.guard,
+                    inputs.latest.close,
+                    inputs.atr,
+                    &plan.ew2,
+                );
+                let ew3 = ew_status(
+                    inputs.state,
+                    inputs.direction,
+                    inputs.guard,
+                    inputs.latest.close,
+                    inputs.atr,
+                    &plan.ew3,
+                );
+                let deep = deep_status(inputs.state, inputs.guard, plan);
+                let reclaim = midpoint(&plan.deep_add);
+                (
+                    ew1,
+                    ew2,
+                    ew3,
+                    deep,
+                    Some(plan.entry_ideal),
+                    Some(reclaim),
+                    Some(midpoint(&plan.ew1)),
+                    Some(midpoint(&plan.ew2)),
+                    Some(midpoint(&plan.ew3)),
+                    Some(midpoint(&plan.deep_add)),
+                )
+            }
+            None => (
+                EwStatus::Map,
+                EwStatus::Map,
+                EwStatus::Map,
+                if inputs.guard.shock_freeze_bars > 0 {
+                    DeepStatus::Invalid
+                } else {
+                    DeepStatus::Map
+                },
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+            ),
+        };
 
         let waktu_entry = entry_window(inputs);
         let waktu_entry_expires_at = waktu_entry.map(|w| w.until);
@@ -286,12 +333,28 @@ impl PanelReport {
         let next_trade_window = next_trade_window(inputs);
         let next_trade_expires_at = next_trade_window.map(|w| w.until);
 
-        let (sl_wide_label, sl_atr_distance) = inputs
+        let (sl_wide_label, sl_atr_distance, sl_price) = inputs
             .plan
-            .map(|p| (Some(p.stop_loss.width), Some(p.stop_loss.atr_distance)))
-            .unwrap_or((None, None));
+            .map(|p| {
+                (
+                    Some(p.stop_loss.width),
+                    Some(p.stop_loss.atr_distance),
+                    Some(p.stop_loss.price),
+                )
+            })
+            .unwrap_or((None, None, None));
 
-        let (tp1_prob, tp2_prob, tp3_prob, tp1_label, tp2_label, tp3_label) = inputs
+        let (
+            tp1_prob,
+            tp2_prob,
+            tp3_prob,
+            tp1_label,
+            tp2_label,
+            tp3_label,
+            tp1_price,
+            tp2_price,
+            tp3_price,
+        ) = inputs
             .plan
             .map(|p| {
                 (
@@ -301,9 +364,12 @@ impl PanelReport {
                     Some(p.take_profits.tp1_label),
                     Some(p.take_profits.tp2_label),
                     Some(p.take_profits.tp3_label),
+                    Some(p.take_profits.tp1),
+                    Some(p.take_profits.tp2),
+                    Some(p.take_profits.tp3_optional),
                 )
             })
-            .unwrap_or((None, None, None, None, None, None));
+            .unwrap_or((None, None, None, None, None, None, None, None, None));
 
         let (eta_tp1, eta_tp2, eta_tp3) = match inputs.plan {
             Some(plan) => (
@@ -367,6 +433,14 @@ impl PanelReport {
             eta_tp2,
             eta_tp3,
             reclaim_price,
+            ew1_price,
+            ew2_price,
+            ew3_price,
+            deep_price,
+            sl_price,
+            tp1_price,
+            tp2_price,
+            tp3_price,
             extras: inputs.extras,
         }
     }

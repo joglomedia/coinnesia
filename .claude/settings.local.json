@@ -22,7 +22,14 @@
       "WebFetch(domain:twelvedata.com)",
       "Bash(python3 *)",
       "WebFetch(domain:support.twelvedata.com)",
-      "Bash(UPDATE_PARITY_FIXTURES=1 cargo test --test parity)"
+      "Bash(UPDATE_PARITY_FIXTURES=1 cargo test --test parity)",
+      "Bash(wait)",
+      "Bash(UPDATE_PARITY_FIXTURES=1 cargo test --test parity btc_v619)",
+      "Bash(RUST_TEST_THREADS=1 cargo test --test parity btc_v619)",
+      "Bash(UPDATE_PARITY_FIXTURES=1 cargo test --test parity btc_v619 -- --nocapture)",
+      "Bash(awk NR>=395 && NR<=460 *)",
+      "Bash(awk NR>=460 && NR<=475 *)",
+      "Bash(RUST_TEST_THREADS=1 cargo test --lib app::supervisor)"
     ]
   }
 }

@@ -184,27 +184,13 @@ fn format_panel(symbol: &str, signal: &SignalResult, panel: &PanelReport) -> Str
         escape_html(&panel.flow_text),
     ));
 
-    // EW rows
-    rows.push(format!(
-        "<b>EW1</b> {} {}",
-        escape_html(panel.ew1_status.label()),
-        ew_emoji(panel.ew1_status),
-    ));
-    rows.push(format!(
-        "<b>EW2</b> {} {}",
-        escape_html(panel.ew2_status.label()),
-        ew_emoji(panel.ew2_status),
-    ));
-    rows.push(format!(
-        "<b>EW3</b> {} {}",
-        escape_html(panel.ew3_status.label()),
-        ew_emoji(panel.ew3_status),
-    ));
-    rows.push(format!(
-        "<b>DEEP RISK</b> {} {}",
-        escape_html(panel.deep_status.label()),
-        deep_emoji(panel.deep_status),
-    ));
+    // EW rows — Pine renders each as `{price} | {STATUS}`. The price is the
+    // band midpoint (or `entry_ideal` for EW1's anchor reading); when the
+    // panel didn't carry one (no plan at all) we drop to the status-only form.
+    rows.push(format_ew_row("EW1", panel.ew1_price, panel.ew1_status));
+    rows.push(format_ew_row("EW2", panel.ew2_price, panel.ew2_status));
+    rows.push(format_ew_row("EW3", panel.ew3_price, panel.ew3_status));
+    rows.push(format_deep_row(panel.deep_price, panel.deep_status));
     rows.push(format!(
         "<b>TRAP GATE</b> {}",
         escape_html(&panel.trap_gate_text),
@@ -221,7 +207,16 @@ fn format_panel(symbol: &str, signal: &SignalResult, panel: &PanelReport) -> Str
         ));
     }
 
-    if let (Some(width), Some(dist)) = (panel.sl_wide_label, panel.sl_atr_distance) {
+    if let (Some(price), Some(width), Some(dist)) =
+        (panel.sl_price, panel.sl_wide_label, panel.sl_atr_distance)
+    {
+        rows.push(format!(
+            "<b>SL</b> {:.4} · {} · {:.2} ATR",
+            price,
+            escape_html(sl_width_label(width)),
+            dist,
+        ));
+    } else if let (Some(width), Some(dist)) = (panel.sl_wide_label, panel.sl_atr_distance) {
         rows.push(format!(
             "<b>SL</b> {} · {:.2} ATR",
             escape_html(sl_width_label(width)),
@@ -229,10 +224,10 @@ fn format_panel(symbol: &str, signal: &SignalResult, panel: &PanelReport) -> Str
         ));
     }
 
-    if let (Some(plan), Some(p1)) = (signal.entry_plan.as_ref(), panel.tp1_prob) {
+    if let (Some(price), Some(p1)) = (panel.tp1_price, panel.tp1_prob) {
         rows.push(format!(
             "<b>TP1</b> {:.4} · {}% {}",
-            plan.take_profits.tp1,
+            price,
             p1,
             panel
                 .tp1_label
@@ -240,10 +235,10 @@ fn format_panel(symbol: &str, signal: &SignalResult, panel: &PanelReport) -> Str
                 .unwrap_or_default(),
         ));
     }
-    if let (Some(plan), Some(p2)) = (signal.entry_plan.as_ref(), panel.tp2_prob) {
+    if let (Some(price), Some(p2)) = (panel.tp2_price, panel.tp2_prob) {
         rows.push(format!(
             "<b>TP2</b> {:.4} · {}% {}",
-            plan.take_profits.tp2,
+            price,
             p2,
             panel
                 .tp2_label
@@ -251,10 +246,10 @@ fn format_panel(symbol: &str, signal: &SignalResult, panel: &PanelReport) -> Str
                 .unwrap_or_default(),
         ));
     }
-    if let (Some(plan), Some(p3)) = (signal.entry_plan.as_ref(), panel.tp3_prob) {
+    if let (Some(price), Some(p3)) = (panel.tp3_price, panel.tp3_prob) {
         rows.push(format!(
             "<b>TP3</b> {:.4} · {}% {} (optional)",
-            plan.take_profits.tp3_optional,
+            price,
             p3,
             panel
                 .tp3_label
@@ -349,6 +344,47 @@ fn asset_class_label(asset_class: AssetClass) -> &'static str {
     }
 }
 
+fn format_ew_row(
+    label: &str,
+    price: Option<f64>,
+    status: crate::strategy::panel::EwStatus,
+) -> String {
+    match price {
+        Some(p) => format!(
+            "<b>{}</b> {:.4} · {} {}",
+            label,
+            p,
+            escape_html(status.label()),
+            ew_emoji(status),
+        ),
+        None => format!(
+            "<b>{}</b> {} {}",
+            label,
+            escape_html(status.label()),
+            ew_emoji(status),
+        ),
+    }
+}
+
+fn format_deep_row(
+    price: Option<f64>,
+    status: crate::strategy::panel::DeepStatus,
+) -> String {
+    match price {
+        Some(p) => format!(
+            "<b>DEEP RISK</b> {:.4} · {} {}",
+            p,
+            escape_html(status.label()),
+            deep_emoji(status),
+        ),
+        None => format!(
+            "<b>DEEP RISK</b> {} {}",
+            escape_html(status.label()),
+            deep_emoji(status),
+        ),
+    }
+}
+
 fn ew_emoji(status: crate::strategy::panel::EwStatus) -> &'static str {
     use crate::strategy::panel::EwStatus::*;
     match status {
@@ -439,6 +475,14 @@ mod tests {
             eta_tp2: None,
             eta_tp3: None,
             reclaim_price: None,
+            ew1_price: None,
+            ew2_price: None,
+            ew3_price: None,
+            deep_price: None,
+            sl_price: None,
+            tp1_price: None,
+            tp2_price: None,
+            tp3_price: None,
             extras: PanelAssetExtras::default(),
         }
     }
