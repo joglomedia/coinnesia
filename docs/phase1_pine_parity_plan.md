@@ -506,6 +506,262 @@ Acceptance:
 - `cargo test --test parity` passes against refreshed fixtures.
 - `cargo test --lib` still passes (156/156).
 
+### 1.7.16 Pine V1 Gold deep-audit gap report — Drafted 2026-06-05; commits 1 (A+B+E) & 2 (C) Done 2026-06-06
+
+Estimate: ~9 hours total across 4 commits. Status: **Drafted**. Discovered during the
+third OANDA:XAUUSD 1D diff session (2026-06-05) — the user re-ran
+`cargo run -- export-panel OANDA:XAUUSD 1D` against the refreshed Pine reference
+and found that `bias_text`, `conf_text`, `trap_gate_text`, EW1/EW2/EW3 prices,
+`reclaim_price`, `sl_price`, TP1/TP2/TP3 prices, and the `extras` block still
+diverge from Pine. Pine source compared was
+`docs/TV_Pine_Scripts/TV_GOLD_PAXG_XAUT_V1.pine.txt` (V1, 1525 lines).
+
+**Reference Pine output** (captured 2026-06-04 screenshot, OANDA:XAUUSD 1D, SHORT bias):
+- BIAS: `Bias : MAP SHORT 15%`
+- CONF: `JUAL 15% | MIN 58%`
+- SESI: `USA | 20:30-02:59 WIB | THIN EXCHANGE | XAU JUAL`
+- TRAP GATE: `AKUMULASI`
+- EW1: `4496.885 | TOUCHED`, EW2: `4522.262 | WAIT`, EW3: `4543.161 | WAIT`
+- DEEP RISK: `4569.713 | MAP`
+- ENTRY IDEAL: `4531.219`
+- SL: `4764.866 | 2.64 ATR WIDE`
+- TP1: `4459.893 | 0%`, TP2: `4437.561 | 0%`, TP3: `4415.230 | 0% LOW PROB`
+- RECLAIM: `4513.082`
+
+**Rust output 2026-06-05** (same symbol/timeframe):
+- BIAS: `MAP SHORT 50%`, CONF: `JUAL 50% | MIN 58%`
+- TRAP GATE: `LIQ SWEEP`
+- EW1: `4448.74`, EW2: `4492.19`, EW3: `4529.43`, DEEP: `4564.60`
+- ENTRY IDEAL: `4508.33` (formula matches; differs because EW1/2/3 inputs differ)
+- SL: `4676.32 | 3.05 ATR WIDE`
+- TP1: `4338.06`, TP2: `4315.31`, TP3: `4292.55`
+- RECLAIM: `4564.60` (same value as `deep_price` — clearly wrong source)
+- extras.xauusd_bias: `wait` (proxy snapshot not feeding panel)
+
+#### Gap A — BIAS / CONF percentages (regression from 1.7.14 Gap 2; CRITICAL). Done 2026-06-06.
+
+Pine `biasPercent`/`confText` use the **weighted analog score**
+(`longConf = int(round(clamp(longScore, 0, 100)))`), NOT a layer vote ratio.
+
+```
+Pine:   biasPercent = strongestBiasIsLong ? longConf : shortConf
+        confText = strongestBiasIsLong ? "BELI " + str.tostring(longConf) + "%"
+                                       : "JUAL " + str.tostring(shortConf) + "%"
+        longConf = int(round(clamp(longScore, 0, 100)))
+        ; longScore is the weighted composition on lines 691-745
+        ; (bias4h, bias1d, trendUp, MACD, RSI, DI, ADX, VWAP, MTF dominant,
+        ;  structure, SMC bonus, antiChop penalty, micro-trend overrides,
+        ;  consensus weighting, gold proxy weight)
+```
+
+Rust currently renders `layers_passed / layers_total * 100` (introduced in
+sub-phase 1.7.14 Gap 2). Pine 15% means `shortScore ≈ 15` post-composition.
+Rust 50% comes from "4 of 8 hard layers" — a different quantity entirely.
+
+Files to change:
+- `src/strategy/panel.rs::bias_text` / `conf_text` — revert to using
+  `inputs.confidence.score(direction)` (the weighted analog) and drop
+  the `long_vote_pct`/`short_vote_pct` arguments from the public surface.
+- `src/strategy/panel.rs::PanelInputs` — remove the two `*_vote_pct` fields
+  added in 1.7.14 (or downgrade to debug-only).
+- `src/strategy/signals.rs` — remove `layers_passed`/`layers_total` tracking
+  from `DirectionEvaluation` (or keep for telemetry but stop feeding the panel).
+- `src/strategy/signals.rs::build_panel` — drop the two added parameters.
+
+#### Gap B — RECLAIM source formula wrong (CRITICAL). Done 2026-06-06.
+
+Pine line 1499:
+```pine
+reclaim = activeLong ? ew1 - ((ew1 - ew3) * 0.35)
+                     : ew1 + ((ew3 - ew1) * 0.35)
+```
+
+Pine SHORT verify: `ew1=4497`, `ew3=4543` → `reclaim = 4497 + 0.35*(4543-4497) = 4513.1` ✓
+matches screenshot.
+
+Rust currently (`src/strategy/panel.rs:266`):
+`let reclaim = midpoint(&plan.deep_add)`
+
+That value duplicates DEEP RISK and is the wrong source entirely. The
+`midpoint(deep_add)` now correctly lives in `deep_price` after sub-phase 1.7.15,
+so the duplication is no longer needed. Replace with the Pine formula
+based on `ew1`/`ew3` midpoints + the active direction.
+
+Files to change:
+- `src/strategy/panel.rs::build` — replace the `reclaim` computation.
+
+#### Gap C — EW spacing missing altEWFactor and daily-timeframe clamps (HIGH). Done 2026-06-06.
+
+Pine lines 400, 831-846:
+```pine
+altEWFactor = useGoldEngine ? f_clamp(
+    (altWildVol ? altEWVolCompress : 1.0)
+  * (altThinFlow ? altEWThinCompress : 1.0)
+  * (goldSessionQuiet ? 0.92 : sess == "EROPA" ? 0.98 : sess == "USA" ? 0.95 : 1.0),
+    0.58, 1.05) : 1.0
+
+ew1MaxEff = ew1MaxATR * altEWFactor
+ew2Eff    = (timeframe.isdaily ? math.min(ew2ATR, 0.34) : ew2ATR) * altEWFactor
+ew3Eff    = (timeframe.isdaily ? math.min(ew3ATR, 0.62) : ew3ATR) * altEWFactor
+deepEff   = (timeframe.isdaily ? math.min(deepATR, 0.88) : deepATR)
+          * f_clamp(altEWFactor + 0.08, 0.50, 1.12)
+```
+
+Rust `src/strategy/entry_plan.rs:101-104`:
+```rust
+let ew1_max_eff = self.config.ew1_max_atr;
+let ew2_eff     = self.config.ew2_atr;
+let ew3_eff     = self.config.ew3_atr;
+let deep_eff    = self.config.deep_add_atr;
+```
+
+No session compression, no daily clamp. On 1D USA Gold, Pine effective is
+`ew2=0.323, ew3=0.589, deep=0.907`. Rust uses raw `0.42, 0.78, 1.12` — that's
+~1.7× wider spacing, which is the dominant cause of all the EW/SL/TP price
+divergence.
+
+Files to change:
+- `src/strategy/plan_context.rs::PlanContext` — add `pub alt_ew_factor: f64`,
+  `pub is_daily: bool`.
+- `src/strategy/signals.rs::build_plan_context` — populate both fields.
+- `src/assets/mod.rs::AssetEvaluator` — new method
+  `fn ew_compression_factor(&self, session: MarketSession, flow: FlowState,
+   shock_active: bool) -> f64`. Default impl returns `1.0`. Gold overrides
+  with the Pine `altEWFactor` formula. Altcoin V62 likely needs its own variant.
+- `src/strategy/entry_plan.rs::calculate_from_context` — apply the factor and
+  daily clamps to `ew2_eff`, `ew3_eff`, `deep_eff` before the EW2/3/Deep
+  computations. Note Pine's `deepEff` uses an *inner* clamp on
+  `altEWFactor + 0.08`, then multiplies — not the same as `clamp(altEWFactor, …)`.
+
+Test impact: refresh all 5 `tests/fixtures/parity/*.panel.json` snapshots.
+
+#### Gap D — Trap-type detector divergence (MEDIUM)
+
+Pine line 784 priority order:
+`BULL TRAP > BEAR TRAP > LIQ SWEEP > DISTRIBUSI > AKUMULASI > SLOW HUNT > STOP HUNT > BERSIH`.
+
+Rust `panel.rs::trap_gate_text` matches that priority order exactly. So the
+divergence isn't in the panel rendering — it's in the upstream conditions
+(`liqSweepHighSMC`, `liqSweepLowSMC`, `eqHighSweep`, `eqLowSweep` in Pine vs
+the `TrapType::LiqSweep` decision in `src/strategy/trap_guard.rs`). Pine fired
+`AKUMULASI` (accumulationRisk-only); Rust fired `LIQ SWEEP` — the Rust sweep
+detector is over-firing relative to Pine's SMC + equal-high/low gates.
+
+Files to investigate:
+- `src/indicators/liquidity.rs` — sweep detector vs Pine
+  `liqSweepHighSMC`/`liqSweepLowSMC` (SMC trend-state required) and
+  `eqHighSweep`/`eqLowSweep` (equal-high/low marker plus a sweep).
+- `src/strategy/trap_guard.rs::detect_trap_type` — verify the gating logic
+  feeding `TrapType::LiqSweep` requires both an equal-high/low context AND
+  the SMC trend state to be aligned, not just any wick-out.
+
+Likely lower-priority for now; the higher gaps dominate the visible panel
+divergence and this one needs a separate side-by-side test fixture.
+
+#### Gap E — BIAS prefix "Bias : " missing (TRIVIAL). Done 2026-06-06 (folded into Gap A's `bias_text` rewrite).
+
+Pine line 1138: `biasFullText = "Bias : MAP " + biasDisplay + " " + str.tostring(biasPercent) + "%"`.
+
+Rust currently emits `"MAP SHORT 50%"` — missing the `"Bias : "` prefix.
+
+Files to change:
+- `src/strategy/panel.rs::bias_text` — prepend `"Bias : "` to the Wait branch
+  (and Long/Short branches if Pine uses it there too — check the Pine
+  `signalDir == "BELI"` path before committing).
+
+#### Gap F — extras.xauusd_bias = "wait" (MEDIUM)
+
+Pine line 523: `goldProxyBias = f_bias(goldPx, goldProxyE20, goldProxyE50)` —
+produces BELI / JUAL / SIDEWAYS from a real OANDA:XAUUSD candle stream feeding
+20/50 EMAs. Pine SHORT screenshot shows `XAU JUAL` in the SESI row, meaning
+the proxy bias was active.
+
+Rust emits `xauusd_bias: "wait"` — meaning `SignalDirection::Wait`. Either
+(1) the TradingView proxy fetch returned no OANDA:XAUUSD candles for this run
+(session cookie issue or symbol mapping), (2) the indicator snapshot isn't
+computing the proxy bias from the prefetched candles, or (3) the asset extras
+aren't propagating from the snapshot to `PanelInputs.extras`.
+
+Files to investigate (in order):
+- `src/data/proxy.rs::fetch_once_per_cycle` — verify the OANDA:XAUUSD entry
+  is in `proxy_symbols` and returns non-empty candles.
+- `src/indicators/htf_bias.rs` + the `IndicatorSnapshot` build — verify the
+  proxy bias is computed when proxy candles are available.
+- `src/strategy/signals.rs` — verify `PanelInputs.extras.xauusd_bias` is set
+  from the snapshot (not hard-coded to `Wait`).
+
+#### Gap G — SL formula possibly missing session/wick padding (MEDIUM)
+
+Pine lines 240-248:
+```pine
+shortStop = math.max(baseStop, math.max(structStop, deepStop))
+   where structStop = swingHigh + atr*slStructATR + sessPad + trapPad + wickPad + volPad
+         deepStop   = deepAdd + atr*(minSLDistanceATR + f_session_extra(sess))
+```
+
+Pine SL = 4765, deep = 4570 → SL is ~3.5 ATR past deep.
+Rust SL = 4676, deep = 4565 → SL is ~2.0 ATR past deep.
+
+Either the session/trap/wick/vol padding stack isn't fully replicated in
+`StopLoss::from_context`, or the structStop swingHigh source differs.
+
+Files to audit:
+- `src/strategy/sl_engine.rs::StopLoss::from_context` — side-by-side
+  against Pine `f_short_sl` / `f_long_sl`.
+
+#### Gap H — TP formula missing altTPFactor (LOW)
+
+Pine lines 881-886:
+```pine
+shortTP1Raw = shortTPBase - atr * tp1ATR * trendTPFactor * sessTPFactor * altTPFactor
+```
+
+Rust `tp_engine.rs:176-178, 219-221`:
+```rust
+let raw1 = base + atr * config.tp1_atr * trend_factor * session_factor;
+```
+
+Missing the `altTPFactor` (asset/Gold-specific compression). The
+`trendTPFactor` and `sessTPFactor` already match Pine. The TP base
+(`max(close, EW1)` for LONG, `min(close, EW1)` for SHORT) also matches.
+
+Files to change:
+- `src/strategy/plan_context.rs::PlanContext` — add `pub alt_tp_factor: f64`.
+- `src/assets/mod.rs::AssetEvaluator` — new method
+  `fn tp_compression_factor(&self, session, flow, shock) -> f64` with `1.0`
+  default and Gold/Altcoin overrides per Pine.
+- `src/strategy/tp_engine.rs::from_context` — multiply raw1/2/3 by
+  `ctx.alt_tp_factor`.
+
+#### Suggested commit sequencing
+
+1. **B + E + A** (panel text only — no formula math) — restore weighted-analog
+   BIAS/CONF, fix RECLAIM source, add `"Bias : "` prefix. Refresh 5 parity
+   fixtures. Smallest blast radius. ~1h.
+2. **C** (`altEWFactor` + daily clamps in `entry_plan.rs` + new
+   `AssetEvaluator::ew_compression_factor`). Refresh fixtures. ~3h. Biggest
+   formula change; expect noticeable shifts in all 5 fixture asset suites.
+3. **G + H** (SL session/wick padding completeness + `altTPFactor`). Refresh
+   fixtures. ~2h.
+4. **F + D** (proxy bias plumbing for `xauusd_bias` + trap-type detector audit).
+   Likely the longest tail because (F) involves the network/proxy layer and
+   (D) requires fixtures for the LIQ SWEEP vs AKUMULASI conditions. ~3h.
+
+Acceptance for the full sub-phase:
+
+- `cargo run -- export-panel OANDA:XAUUSD 1D` produces BIAS/CONF percentages
+  matching Pine within ±2 percentage points.
+- RECLAIM and DEEP RISK are no longer equal; RECLAIM tracks the Pine formula
+  on lines 1499.
+- EW1/2/3 spacing on 1D USA Gold within ±10 USD of Pine reference values.
+- SL distance in ATR units within ±0.3 of Pine SHORT (2.64 ATR Pine vs 3.05
+  ATR current Rust).
+- TP1/2/3 prices within ±5 USD of Pine reference.
+- `extras.xauusd_bias` reflects the live OANDA:XAUUSD proxy direction.
+- `trap_gate_text` matches Pine on the captured trap fixture set.
+- `cargo test --test parity` and `cargo test --lib` both green after each
+  commit.
+
 ## Delivery Sequencing
 
 Recommended order (dependencies first):

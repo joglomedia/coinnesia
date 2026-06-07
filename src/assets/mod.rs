@@ -7,6 +7,8 @@ pub mod stocks_idx;
 use crate::{
     config::{profiles, AppConfig},
     strategy::{
+        plan_context::FlowState,
+        session::MarketSession,
         signals::{evaluate_direction, DirectionEvaluation, IndicatorSnapshot},
         SignalDirection,
     },
@@ -52,6 +54,21 @@ pub(crate) trait AssetEvaluator {
         _config: &AppConfig,
     ) -> Option<String> {
         None
+    }
+
+    /// Sub-phase 1.7.16 Gap C — Pine `altEWFactor` (Gold V1 line 400, Altcoin
+    /// V62 line 388). Multiplies the EW2 / EW3 / Deep-add spacing to shrink
+    /// the entry ladder under thin-flow or off-peak-session conditions. The
+    /// default returns `1.0` (no compression — matches BTC V61.9, Forex V58,
+    /// IDX V5, which leave the EW spacing un-multiplied). Asset classes with
+    /// a Pine `altEWFactor` override this method.
+    fn ew_compression_factor(
+        &self,
+        _session: MarketSession,
+        _flow: FlowState,
+        _shock_active: bool,
+    ) -> f64 {
+        1.0
     }
 }
 

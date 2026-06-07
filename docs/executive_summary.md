@@ -15,20 +15,26 @@
   ┌───────────────────────────────────┬──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┐
   │                            Area                            │                                            Implementasi                                             │
   ├────────────────────────────────────────────────────────────┼─────────────────────────────────────────────────────────────────────────────────────────────────────┤
-  │ CLI (src/main.rs)                                          │ check-config, serve, migrate, scan-once, scan, trade (placeholder), backtest (scaffold)             │
+  │ CLI (src/main.rs)                                          │ check-config, serve, migrate, scan-once, scan, trade (placeholder), backtest (scaffold),            │
+  │                                                            │ export-panel <symbol> <timeframe> (JSON dump PanelReport untuk parity diff)                         │
   ├────────────────────────────────────────────────────────────┼─────────────────────────────────────────────────────────────────────────────────────────────────────┤
-  │ HTTP API (src/api/routes.rs)                               │ GET /health, /ready, /metrics, /config; POST /scan (dengan token auth via COINNESIA_API_TOKEN)      │
+  │ HTTP API (src/api/routes.rs)                               │ GET /health, /ready, /metrics, /config, /signals/{symbol} (JSON), /panel/{symbol} (HTML Pine        │
+  │                                                            │ reference panel); POST /scan (dengan token auth via COINNESIA_API_TOKEN)                            │
   ├────────────────────────────────────────────────────────────┼─────────────────────────────────────────────────────────────────────────────────────────────────────┤
   │ Service Kernel (src/app/supervisor.rs)                     │ Supervisor + JoinSet mengawasi 4 worker: scanner, alert, trading, reconciliation; shutdown via      │
   │                                                            │ CancellationToken                                                                                   │
   ├────────────────────────────────────────────────────────────┼─────────────────────────────────────────────────────────────────────────────────────────────────────┤
-  │ Indikator (src/indicators/* — 14 modul)                    │ EMA, ATR (Wilder), RSI (RMA wajib), ADX/DMI, MACD, VWAP (anchored + daily WIB), Volume, Candle      │
-  │                                                            │ shape, SMC (BOS/CHOCH), Liquidity sweeps, Order blocks, Support/Resistance, Regime                  │
+  │ Indikator (src/indicators/* — 18 modul)                    │ EMA, ATR (Wilder), RSI (RMA wajib), ADX/DMI, MACD, VWAP (anchored + daily WIB), Volume, Candle      │
+  │                                                            │ shape, SMC (BOS/CHOCH), Liquidity sweeps, Order blocks, Support/Resistance, Regime, CMF, OBV,       │
+  │                                                            │ RVOL, HTF bias, Relative Strength (5 ditambahkan Phase 1.7.7)                                       │
   ├────────────────────────────────────────────────────────────┼─────────────────────────────────────────────────────────────────────────────────────────────────────┤
-  │ Strategy 6-layer (src/strategy/*)                          │ confidence scoring → MTF threshold → session gate (WIB) → trap guard → entry plan ATR-based         │
-  │                                                            │ (EW1/EW2/EW3 + Deep Add) → TP1/2/3 & SL engine                                                      │
+  │ Strategy (src/strategy/* — 12 modul, Pine V61.x parity)    │ 6-layer evaluator (Trend/HTF/EMA HTF/Momentum/Volume/Entry/Anti-Trap/Regime+Session) → MTF konsensus │
+  │                                                            │ → session gate (WIB) → trap guard V61.8 → entry plan swing/VWAP/EMA-anchored (EW1/2/3 + Deep Add) → │
+  │                                                            │ TP1/2/3 (probability-scored, LOWPROB label) + SL engine (WIDE/NORMAL); PanelReport struct mirror    │
+  │                                                            │ semua row Pine reference panel + map_plan untuk Wait paths                                          │
   ├────────────────────────────────────────────────────────────┼─────────────────────────────────────────────────────────────────────────────────────────────────────┤
-  │ Profil Aset (src/assets/*)                                 │ btc, altcoin, gold, forex, stocks_idx — masing-masing menyetel bobot indikator                      │
+  │ Profil Aset (src/assets/*)                                 │ btc (V61.9), altcoin (V62 adaptive), gold (V1 + XAUUSD proxy bias), forex (V58 + H4/D1 HTF), │
+  │                                                            │ stocks_idx (V5 + RVOL/CMF/OBV/RS) — per-asset evaluator branching (Phase 1.7.8)                     │
   ├────────────────────────────────────────────────────────────┼─────────────────────────────────────────────────────────────────────────────────────────────────────┤
   │ Data Sources (src/data/*)                                  │ Binance REST + WebSocket (tokio-tungstenite, opsional), TradingView via tvdata-rs 0.1.2,        │
   │                                                            │ Twelve Data REST (proxy symbols), proxy simbol (XAUUSD/IHSG/DXY)                               │
@@ -39,7 +45,12 @@
   │ Cache & Pub/Sub (src/cache/*)                              │ Valkey/Redis — snapshots, dedupe TTL, distributed locks, pub/sub scanner→alert, rate-limit token    │
   │                                                            │ bucket                                                                                              │
   ├────────────────────────────────────────────────────────────┼─────────────────────────────────────────────────────────────────────────────────────────────────────┤
-  │ Alerts (src/alerts/worker.rs + telegram.rs)                │ Worker polling alert_jobs, kirim ke Telegram Bot API, dedup via Valkey TTL, retry exponential       │
+  │ Alerts (src/alerts/worker.rs + telegram.rs)                │ Worker polling alert_jobs, kirim ke Telegram Bot API, dedup via Valkey TTL, retry exponential.      │
+  │                                                            │ Formatter HTML render full Pine PanelReport (PUTUSAN/TRADE SCORE/BIAS/CONF/SESI/FLOW/EW1-3/         │
+  │                                                            │ DEEP RISK/TRAP GATE/SL/TP1-3/ETA/RECLAIM + per-asset extras) saat panel hadir                       │
+  ├────────────────────────────────────────────────────────────┼─────────────────────────────────────────────────────────────────────────────────────────────────────┤
+  │ Parity Test Harness (tests/parity.rs)                      │ 5 suite golden-file (btc_v619, altcoin_v62, gold_v1, forex_v58, idx_v5) — fixture deterministik    │
+  │                                                            │ + PanelReport JSON captured; regenerate via UPDATE_PARITY_FIXTURES=1 cargo test --test parity       │
   ├────────────────────────────────────────────────────────────┼─────────────────────────────────────────────────────────────────────────────────────────────────────┤
   │ Observability (src/observability/*)                        │ Health registry per-komponen, RuntimeMetrics counter, /metrics endpoint                             │
   └────────────────────────────────────────────────────────────┴─────────────────────────────────────────────────────────────────────────────────────────────────────┘
@@ -139,12 +150,8 @@
   │ src/risk/{correlation,drawdown,kill_switch,limits,position_sizer}.rs      │ Stub minimal (4–6     │ RiskManager::evaluate hanya cek SignalState::Freeze          │
   │                                                                           │ baris)                │                                                              │
   ├───────────────────────────────────────────────────────────────────────────┼───────────────────────┼──────────────────────────────────────────────────────────────┤
-  │ API read endpoints                                                        │ Belum ada             │ /signals, /orders, /positions, /portfolio belum diekspos     │
-  ├───────────────────────────────────────────────────────────────────────────┼───────────────────────┼──────────────────────────────────────────────────────────────┤
-  │ src/risk/{correlation,drawdown,kill_switch,limits,position_sizer}.rs      │ Stub minimal (4–6     │ RiskManager::evaluate hanya cek SignalState::Freeze          │
-  │                                                                           │ baris)                │                                                              │
-  ├───────────────────────────────────────────────────────────────────────────┼───────────────────────┼──────────────────────────────────────────────────────────────┤
-  │ API read endpoints                                                        │ Belum ada             │ /signals, /orders, /positions, /portfolio belum diekspos     │
+  │ API read endpoints (trading/portfolio)                                    │ Belum ada             │ /signals/{symbol} & /panel/{symbol} sudah diekspos (Phase    │
+  │                                                                           │                       │ 1.7.11); /orders, /positions, /portfolio masih belum         │
   ├───────────────────────────────────────────────────────────────────────────┼───────────────────────┼──────────────────────────────────────────────────────────────┤
   │ WebSocket Binance                                                         │ Disabled by default   │ exchange.binance.ws.enabled = false di config                │
   └───────────────────────────────────────────────────────────────────────────┴───────────────────────┴──────────────────────────────────────────────────────────────┘
@@ -152,12 +159,22 @@
   Tidak ditemukan marker eksplisit TODO/FIXME/unimplemented!() dalam kode — gap berbentuk file kosong dan placeholder log message, bukan komentar.
 
   Roadmap tertulis (docs/development_plan.md):
+  - Phase 1.5 (resilience + HFT foundation: rate limiter, retry/backoff, Binance WS streaming): **Done 2026-05-22.**
+  - Phase 1.6 (per-symbol data source routing + concurrent batch fetch): **Done 2026-05-22.**
+  - Phase 1.7 (Pine V61.x parity + PanelReport, 15 sub-phases 1.7.1–1.7.15): **Done 2026-06-05.** Lihat
+    `docs/phase1_pine_parity_plan.md` untuk breakdown — termasuk MTF pipeline, stateful guard counters,
+    EW/SL/TP engine rewrite, trap guard + V61.8 flow engine, 5 indikator baru (CMF/OBV/RVOL/HTF bias/RS),
+    per-asset evaluator branching, proxy snapshot plumbing, PanelReport struct, alert/API surfaces,
+    konfig V61.4–V62.0, parity test harness, panel polish (6 gap OANDA:XAUUSD), price-field exposure.
   - Phase 2: live/paper trading dengan order lifecycle, fills, reconciliation
   - Phase 3: ekspansi portfolio/risk, rebalancing, drawdown gate aktif
   - Phase 4: event-driven backtester + optimizer
   - Phase 5: benchmarking 500+ simbol
 
   ---
-  Maturitas singkat: Infrastruktur dan jalur sinyal sudah produksi-grade dan dites (108 file .rs, ~9.2k LoC, 6 file integration test + unit test inline di seluruh modul
-  indikator/strategy). Bagian execution & capital management (trading nyata, risk gate penuh, portfolio rebalancing, backtester) masih scaffolding — siap untuk diisi di
-  Phase 2 ke atas tanpa perlu mengubah kontrak modul yang ada (semua sudah memakai trait Exchange, trait MarketDataSource, trait AlertSink).
+  Maturitas singkat: Infrastruktur, jalur sinyal, dan parity Pine V61.x sudah produksi-grade dan dites
+  (116 file .rs di `src/`, ~17.8k LoC, 13 file integration test termasuk 5 suite parity, 156 unit test
+  lib pass). Bagian execution & capital management (trading nyata, risk gate penuh, portfolio rebalancing,
+  backtester) masih scaffolding — siap untuk diisi di Phase 2 ke atas tanpa perlu mengubah kontrak modul
+  yang ada (semua sudah memakai trait Exchange, trait MarketDataSource, trait AlertSink, trait
+  AssetEvaluator).

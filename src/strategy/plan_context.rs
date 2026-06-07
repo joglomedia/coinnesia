@@ -67,6 +67,19 @@ pub struct PlanContext {
     /// into a low-flow cap regardless of `flow_state` and applies an extra
     /// probability penalty downstream.
     pub flow_trap_block: bool,
+    /// Sub-phase 1.7.16 Gap C — Pine `altEWFactor` (Gold V1 line 400,
+    /// Altcoin V62 line 388). Per-asset EW spacing compression in `[0.42, 1.08]`
+    /// driven by session, flow, and volatility regime. Gold USA = 0.95;
+    /// Altcoin Asia = 0.92; BTC / Forex / IDX default to 1.0 (no
+    /// compression). Multiplies the `ew2_eff` / `ew3_eff` / `deep_eff`
+    /// spacings; `deep_eff` uses an inner clamp on `alt_ew_factor + 0.08`.
+    pub alt_ew_factor: f64,
+    /// Sub-phase 1.7.16 Gap C — Pine `timeframe.isdaily` clamp on
+    /// `ew2_eff` / `ew3_eff` / `deep_eff`. On 1D the daily caps
+    /// (0.34 / 0.62 / 0.88) win over the raw config; on lower timeframes
+    /// the sideways-regime caps (0.36 / 0.66 / 0.96) apply via
+    /// `is_sideways()`.
+    pub is_daily: bool,
 }
 
 impl PlanContext {

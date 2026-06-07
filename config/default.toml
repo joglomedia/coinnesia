@@ -350,7 +350,7 @@ data_source = "binance"
 timeframes = ["15m", "1h", "4h", "1d"]
 
 [[symbols]]
-symbol = "OANDA:XAUUSD"
+symbol = "XAUUSD"
 asset_class = "gold"
 exchange = ""
 data_source = "tradingview"

@@ -234,8 +234,6 @@ impl<'a> SignalGenerator<'a> {
         let build_panel = |state: SignalState,
                            direction: SignalDirection,
                            confidence: ConfidenceScore,
-                           long_vote_pct: f64,
-                           short_vote_pct: f64,
                            plan: Option<&EntryPlan>,
                            reason: &str|
          -> PanelReport {
@@ -264,8 +262,6 @@ impl<'a> SignalGenerator<'a> {
                 plan,
                 reason,
                 extras: extras_for_panel,
-                long_vote_pct,
-                short_vote_pct,
             };
             PanelReport::build(&inputs)
         };
@@ -281,8 +277,6 @@ impl<'a> SignalGenerator<'a> {
                 SignalState::Freeze,
                 SignalDirection::Wait,
                 ConfidenceScore::neutral(),
-                0.0,
-                0.0,
                 None,
                 &reason,
             );
@@ -305,8 +299,6 @@ impl<'a> SignalGenerator<'a> {
                 SignalState::Freeze,
                 SignalDirection::Wait,
                 ConfidenceScore::neutral(),
-                0.0,
-                0.0,
                 None,
                 "shock_regime",
             );
@@ -329,8 +321,6 @@ impl<'a> SignalGenerator<'a> {
                 SignalState::Wait,
                 SignalDirection::Wait,
                 ConfidenceScore::neutral(),
-                0.0,
-                0.0,
                 None,
                 &reason,
             );
@@ -369,13 +359,6 @@ impl<'a> SignalGenerator<'a> {
         let confidence = ConfidenceScore::from_sides(long.score, short.score);
         let threshold = threshold_for_timeframe(timeframe, &self.config.strategy);
 
-        // Sub-phase 1.7.14 Gap 2 — Pine BIAS/CONF render the vote ratio across
-        // the hard layers, not the weighted analog confidence score. Compute
-        // both ratios as 0..100 percentages so every downstream `build_panel`
-        // call surfaces Pine-equivalent numbers.
-        let long_vote_pct = vote_ratio_pct(&long);
-        let short_vote_pct = vote_ratio_pct(&short);
-
         // Sub-phase 1.7.14 Gap 1 — hypothetical "MAP" entry plan computed as
         // soon as confidence is known so every downstream Wait short-circuit
         // can populate the EW/SL/TP/RECLAIM panel rows. Pine renders these as
@@ -398,6 +381,8 @@ impl<'a> SignalGenerator<'a> {
             trap_score_long.max(trap_score_short),
             &new_state,
             flow_trap_block,
+            timeframe,
+            symbol_config.asset_class,
         );
         let map_plan = EntryPlanCalculator::new(&self.config.entry_plan)
             .calculate_from_context(&map_plan_ctx, snapshot.candles, &self.config.trap_guard);
@@ -407,8 +392,6 @@ impl<'a> SignalGenerator<'a> {
                 SignalState::Wait,
                 SignalDirection::Wait,
                 confidence,
-                long_vote_pct,
-                short_vote_pct,
                 Some(&map_plan),
                 "trap_guard_blocked",
             );
@@ -440,8 +423,6 @@ impl<'a> SignalGenerator<'a> {
                 SignalState::Wait,
                 direction,
                 confidence,
-                long_vote_pct,
-                short_vote_pct,
                 Some(&map_plan),
                 &reason,
             );
@@ -480,8 +461,6 @@ impl<'a> SignalGenerator<'a> {
                 SignalState::Wait,
                 SignalDirection::Long,
                 confidence,
-                long_vote_pct,
-                short_vote_pct,
                 Some(&map_plan),
                 &reason,
             );
@@ -510,8 +489,6 @@ impl<'a> SignalGenerator<'a> {
                 SignalState::Wait,
                 SignalDirection::Short,
                 confidence,
-                long_vote_pct,
-                short_vote_pct,
                 Some(&map_plan),
                 &reason,
             );
@@ -544,8 +521,6 @@ impl<'a> SignalGenerator<'a> {
                 SignalState::Wait,
                 direction,
                 confidence,
-                long_vote_pct,
-                short_vote_pct,
                 Some(&map_plan),
                 &reason,
             );
@@ -582,8 +557,6 @@ impl<'a> SignalGenerator<'a> {
                 SignalState::Wait,
                 direction,
                 confidence,
-                long_vote_pct,
-                short_vote_pct,
                 Some(&map_plan),
                 &reason,
             );
@@ -630,8 +603,6 @@ impl<'a> SignalGenerator<'a> {
                 SignalState::Wait,
                 direction,
                 confidence,
-                long_vote_pct,
-                short_vote_pct,
                 Some(&map_plan),
                 &reason,
             );
@@ -656,6 +627,8 @@ impl<'a> SignalGenerator<'a> {
             trap_score_long.max(trap_score_short),
             &new_state,
             flow_trap_block,
+            timeframe,
+            symbol_config.asset_class,
         );
         let plan = EntryPlanCalculator::new(&self.config.entry_plan)
             .calculate_from_context(&plan_ctx, snapshot.candles, &self.config.trap_guard);
@@ -666,8 +639,6 @@ impl<'a> SignalGenerator<'a> {
                 SignalState::Wait,
                 direction,
                 confidence,
-                long_vote_pct,
-                short_vote_pct,
                 Some(&plan),
                 &reason,
             );
@@ -701,8 +672,6 @@ impl<'a> SignalGenerator<'a> {
                 SignalState::Wait,
                 direction,
                 confidence,
-                long_vote_pct,
-                short_vote_pct,
                 Some(&plan),
                 &reason,
             );
@@ -754,8 +723,6 @@ impl<'a> SignalGenerator<'a> {
                 plan: Some(&plan),
                 reason: &reason,
                 extras: extras_for_panel,
-                long_vote_pct,
-                short_vote_pct,
             };
             PanelReport::build(&inputs)
         };
@@ -1085,25 +1052,6 @@ pub(crate) struct DirectionEvaluation {
     pub(crate) passes: bool,
     pub(crate) blocks_signal: bool,
     pub(crate) reason: String,
-    /// Sub-phase 1.7.14 Gap 2 — number of hard layers that voted in the
-    /// direction this evaluation was run for. Pine renders BIAS / CONF as the
-    /// vote ratio (`layers_passed / layers_total`), independent of the
-    /// weighted analog score used for the MIN threshold gate.
-    pub(crate) layers_passed: u32,
-    pub(crate) layers_total: u32,
-}
-
-/// Sub-phase 1.7.14 Gap 2 — Pine vote-ratio percentage for the BIAS/CONF
-/// panel rows. Returns `layers_passed / layers_total * 100`, or `0.0` when
-/// the evaluator has not yet tallied any layers (defensive: a fresh
-/// `DirectionEvaluation` cannot have a non-zero numerator with zero
-/// denominator).
-fn vote_ratio_pct(eval: &DirectionEvaluation) -> f64 {
-    if eval.layers_total == 0 {
-        0.0
-    } else {
-        (eval.layers_passed as f64 / eval.layers_total as f64) * 100.0
-    }
 }
 
 pub(crate) fn evaluate_direction(
@@ -1211,22 +1159,6 @@ pub(crate) fn evaluate_direction(
 
     let trap = evaluate_trap_guard(snapshot.candles, &config.trap_guard, direction);
     score = (score - trap.penalty).clamp(0.0, 100.0);
-    // Sub-phase 1.7.14 Gap 2 — Pine BIAS/CONF surface the vote ratio over the
-    // hard layers, not the weighted analog score. Tally how many of the eight
-    // hard layers voted in this direction. `htf_bias` / `ema_htf` /
-    // `regime_session` are explicit gates; the rest are the original six.
-    let hard_votes = [
-        trend,
-        htf_bias,
-        ema_htf,
-        momentum,
-        volume,
-        entry,
-        anti_trap,
-        regime_session,
-    ];
-    let layers_total = hard_votes.len() as u32;
-    let layers_passed = hard_votes.iter().filter(|&&v| v).count() as u32;
     DirectionEvaluation {
         score,
         passes: trend && momentum && volume && entry && anti_trap && regime_session,
@@ -1236,8 +1168,6 @@ pub(crate) fn evaluate_direction(
         } else {
             missing.join("|")
         },
-        layers_passed,
-        layers_total,
     }
 }
 
@@ -1583,6 +1513,8 @@ fn build_plan_context(
     trap_score: f64,
     state: &GuardState,
     flow_trap_block: bool,
+    timeframe: Timeframe,
+    asset_class: AssetClass,
 ) -> PlanContext {
     let latest = snapshot.latest;
     let atr = snapshot.atr.value.max(0.0);
@@ -1606,6 +1538,15 @@ fn build_plan_context(
         .ready
         .then(|| snapshot.volume.z_score.value >= 3.0)
         .unwrap_or(false);
+
+    // Sub-phase 1.7.16 Gap C — per-asset EW compression. The evaluator owns
+    // the Pine `altEWFactor` formula; the entry plan applies it to the EW2 /
+    // EW3 / deep-add spacing. BTC / Forex / IDX default to 1.0; Gold and
+    // Altcoin override via `ew_compression_factor`.
+    let shock_active = state.is_frozen() || snapshot.regime == MarketRegime::Shock;
+    let alt_ew_factor =
+        crate::assets::evaluator_for(asset_class).ew_compression_factor(session, flow_state, shock_active);
+    let is_daily = matches!(timeframe, Timeframe::D1);
 
     PlanContext {
         direction,
@@ -1647,8 +1588,10 @@ fn build_plan_context(
         trap_now: trap_score >= config.trap_guard.trap_score_threshold,
         cooldown_active: state.is_trap_cooldown_active(),
         vol_shock,
-        shock_active: state.is_frozen() || snapshot.regime == MarketRegime::Shock,
+        shock_active,
         flow_trap_block,
+        alt_ew_factor,
+        is_daily,
     }
 }
 

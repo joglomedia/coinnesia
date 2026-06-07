@@ -224,11 +224,6 @@ pub struct PanelInputs<'a> {
     pub reason: &'a str,
     /// Asset-class-specific extras populated from the active IndicatorSnapshot.
     pub extras: PanelAssetExtras,
-    /// Sub-phase 1.7.14 Gap 2 — Pine BIAS / CONF render the vote ratio across
-    /// the hard layers, not the weighted analog `confidence` score. These two
-    /// fields carry that ratio as 0..100 percentages for direct display.
-    pub long_vote_pct: f64,
-    pub short_vote_pct: f64,
 }
 
 impl PanelReport {
@@ -240,17 +235,9 @@ impl PanelReport {
         let trade_score_status =
             trade_score_status(trade_score, inputs.state, inputs.trap.blocks_signal);
         let putusan_text = putusan_text(inputs.state).to_owned();
-        let bias_text = bias_text(
-            inputs.state,
-            inputs.direction,
-            inputs.long_vote_pct,
-            inputs.short_vote_pct,
-        );
+        let bias_text = bias_text(inputs.confidence);
         let conf_text = conf_text(
-            inputs.state,
-            inputs.direction,
-            inputs.long_vote_pct,
-            inputs.short_vote_pct,
+            inputs.confidence,
             inputs.min_confidence,
         );
         let session_text = session_text(inputs.session, inputs.asset_class, &inputs.extras);
@@ -295,7 +282,21 @@ impl PanelReport {
                     &plan.ew3,
                 );
                 let deep = deep_status(inputs.state, inputs.guard, plan);
-                let reclaim = midpoint(&plan.deep_add);
+                let ew1_mid = midpoint(&plan.ew1);
+                let ew2_mid = midpoint(&plan.ew2);
+                let ew3_mid = midpoint(&plan.ew3);
+                let deep_mid = midpoint(&plan.deep_add);
+                // Sub-phase 1.7.16 Gap B — Pine `reclaim` (Gold V1 line 1499):
+                //   activeLong  → ew1 - (ew1 - ew3) * 0.35
+                //   activeShort → ew1 + (ew3 - ew1) * 0.35
+                // Both collapse to `ew1 + (ew3 - ew1) * 0.35` because LONG has
+                // ew1 > ew3 (entries below price) and SHORT has ew1 < ew3
+                // (entries above price), so the signed delta carries the
+                // correct direction without an explicit branch. The previous
+                // `midpoint(deep_add)` source duplicated `deep_price` and bore
+                // no relation to the Pine reclaim threshold (the price the
+                // structure must reclaim to re-arm the trade).
+                let reclaim = ew1_mid + 0.35 * (ew3_mid - ew1_mid);
                 (
                     ew1,
                     ew2,
@@ -303,10 +304,10 @@ impl PanelReport {
                     deep,
                     Some(plan.entry_ideal),
                     Some(reclaim),
-                    Some(midpoint(&plan.ew1)),
-                    Some(midpoint(&plan.ew2)),
-                    Some(midpoint(&plan.ew3)),
-                    Some(midpoint(&plan.deep_add)),
+                    Some(ew1_mid),
+                    Some(ew2_mid),
+                    Some(ew3_mid),
+                    Some(deep_mid),
                 )
             }
             None => (
@@ -504,62 +505,43 @@ fn trade_score_status(
     }
 }
 
-/// Pine `BIAS` row. Long signals report `BELI {long_vote%}`, Short
-/// `JUAL {short_vote%}`. Wait/Freeze prefix with `MAP` and show whichever
-/// side has more vote support, or `SIDEWAYS` when neither side has any
-/// hard-layer support. Sub-phase 1.7.14 Gap 2 — the percentage is the
-/// vote-ratio over the hard layers (Pine semantics), not the weighted
-/// analog `confidence` score.
-fn bias_text(
-    state: SignalState,
-    direction: SignalDirection,
-    long_vote_pct: f64,
-    short_vote_pct: f64,
-) -> String {
-    match state {
-        SignalState::Long => format!("BELI {:.0}%", long_vote_pct),
-        SignalState::Short => format!("JUAL {:.0}%", short_vote_pct),
-        SignalState::Freeze => "SIDEWAYS (FREEZE)".to_owned(),
-        SignalState::Wait => match direction {
-            SignalDirection::Long => format!("MAP LONG {:.0}%", long_vote_pct),
-            SignalDirection::Short => format!("MAP SHORT {:.0}%", short_vote_pct),
-            SignalDirection::Wait => {
-                if long_vote_pct.max(short_vote_pct) <= f64::EPSILON {
-                    "SIDEWAYS".to_owned()
-                } else if long_vote_pct >= short_vote_pct {
-                    format!("MAP LONG {:.0}%", long_vote_pct)
-                } else {
-                    format!("MAP SHORT {:.0}%", short_vote_pct)
-                }
-            }
-        },
-    }
+/// Pine `BIAS` row. Always renders `Bias : MAP {LONG|SHORT} {N}%` where the
+/// side is the one with the higher weighted analog score (Pine ties go to
+/// LONG, matching `longConf >= shortConf`). Sub-phase 1.7.16 Gaps A+E —
+/// Pine's `biasFullText` (TV_GOLD_PAXG_XAUT_V1.pine.txt line 1138) prefixes
+/// every BIAS row with `"Bias : "` and always uses `MAP` regardless of
+/// emission state, so we mirror that even on `Long`/`Short` bars. The
+/// percentage is the weighted `ConfidenceScore` (Pine `longConf`/`shortConf`,
+/// `int(round(clamp(longScore, 0, 100)))`) — *not* the layer vote ratio
+/// that sub-phase 1.7.14 Gap 2 incorrectly introduced.
+fn bias_text(confidence: ConfidenceScore) -> String {
+    let (label, pct) = dominant_side(confidence);
+    format!("Bias : MAP {} {}%", label, pct)
 }
 
-/// Pine `CONF` row. Long: `BELI {long_vote%} | MIN {threshold%}`.
-/// Short: `JUAL {short_vote%} | MIN {threshold%}`. Wait/Freeze: mirror the
-/// dominant side rather than printing both — matches the Pine reference
-/// panel which only shows the bias side + MIN threshold even on `NO TRADE`.
-fn conf_text(
-    state: SignalState,
-    direction: SignalDirection,
-    long_vote_pct: f64,
-    short_vote_pct: f64,
-    min: f64,
-) -> String {
-    let dominant_long = match state {
-        SignalState::Long => true,
-        SignalState::Short => false,
-        _ => match direction {
-            SignalDirection::Long => true,
-            SignalDirection::Short => false,
-            SignalDirection::Wait => long_vote_pct >= short_vote_pct,
-        },
-    };
-    if dominant_long {
-        format!("BELI {:.0}% | MIN {:.0}%", long_vote_pct, min)
+/// Pine `CONF` row: `{BELI|JUAL} {N}% | MIN {min}%` where the side is the
+/// dominant weighted-confidence side (Pine line 1495 `confVal`). Pine never
+/// prints both sides on `Wait` — it mirrors the stronger side and shows the
+/// `MIN` threshold gate. Sub-phase 1.7.16 Gap A — restored to the weighted
+/// analog `ConfidenceScore` after sub-phase 1.7.14 Gap 2's vote-ratio
+/// regression.
+fn conf_text(confidence: ConfidenceScore, min: f64) -> String {
+    let (label, pct) = dominant_side(confidence);
+    let action = if label == "LONG" { "BELI" } else { "JUAL" };
+    format!("{} {}% | MIN {:.0}%", action, pct, min)
+}
+
+/// Pine `strongestBiasIsLong = longConf >= shortConf` — ties go to LONG so
+/// the panel never blanks out on a neutral bar. Returns `("LONG", longConf)`
+/// or `("SHORT", shortConf)`, both rounded to integer percentages as Pine
+/// renders via `str.tostring(longConf)`.
+fn dominant_side(confidence: ConfidenceScore) -> (&'static str, u32) {
+    let long_pct = confidence.score(SignalDirection::Long).round() as u32;
+    let short_pct = confidence.score(SignalDirection::Short).round() as u32;
+    if long_pct >= short_pct {
+        ("LONG", long_pct)
     } else {
-        format!("JUAL {:.0}% | MIN {:.0}%", short_vote_pct, min)
+        ("SHORT", short_pct)
     }
 }
 
@@ -836,8 +818,6 @@ mod tests {
             plan,
             reason: "test",
             extras: PanelAssetExtras::default(),
-            long_vote_pct: 0.0,
-            short_vote_pct: 0.0,
         }
     }
 
@@ -890,7 +870,13 @@ mod tests {
         let panel = PanelReport::build(&inputs);
         assert!(panel.trade_score >= 70, "panel trade_score = {}", panel.trade_score);
         assert_eq!(panel.trade_score_status, TradeScoreStatus::Strong);
-        assert!(panel.bias_text.starts_with("BELI"));
+        // Sub-phase 1.7.16 Gap E — Pine's `biasFullText` always renders
+        // `Bias : MAP {LONG|SHORT} {N}%`, even on emission bars.
+        assert!(
+            panel.bias_text.starts_with("Bias : MAP LONG"),
+            "bias_text = {}",
+            panel.bias_text
+        );
     }
 
     #[test]

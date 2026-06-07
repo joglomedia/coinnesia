@@ -18,10 +18,11 @@ It now has:
 
 - Clear module separation for indicators, strategy, assets, exchange, risk, portfolio, trading, backtest, alerts, and scanner.
 - Config-driven shape with TOML.
-- Deterministic indicator foundations for EMA, ATR, and RSI.
+- Deterministic indicators across the full Phase 1.7 set: EMA, ATR, RSI, ADX/DMI, MACD, VWAP, volume, candle shape, SMC, liquidity, order block, support/resistance, regime classifier, CMF, OBV, RVOL, HTF bias, relative strength (18 modules under `src/indicators/`).
 - Exchange abstraction exists, which prevents hard-coding vendor SDKs into core logic.
-- ATR-based entry planning is present.
+- Pine V61.x-parity strategy engine: 6-layer evaluator with per-asset-class branching (BTC V61.9, Altcoin V62, Gold V1, Forex V58, IDX V5), MTF aggregation, stateful guard counters, V61.8 flow engine, trap guard, EW/SL/TP engine (swing/VWAP/EMA anchored), and the `PanelReport` data structure that mirrors every TradingView reference-panel row.
 - Scanner ingestion, strategy scoring, caching, Postgres persistence, and alert delivery are now wired end-to-end for the signal-only path.
+- Parity test harness (`tests/parity.rs`) compares live `PanelReport` JSON against captured Pine fixtures for all 5 asset classes; regenerable via `UPDATE_PARITY_FIXTURES=1`.
 - `tracing` is already used, which is the right logging base for a service.
 
 ## Gaps To Fix
@@ -32,7 +33,7 @@ It now has:
 
 ### 2. Web API exists, but read surfaces remain partial
 
-Axum is now in place for `/health`, `/ready`, `/metrics`, `/config`, and authenticated `POST /scan`.
+Axum is now in place for `/health`, `/ready`, `/metrics`, `/config`, authenticated `POST /scan`, `GET /signals/{symbol}` (JSON), and `GET /panel/{symbol}` (HTML rendering of the Pine reference panel — added in sub-phase 1.7.11).
 
 Recommended role of the API:
 
@@ -235,6 +236,47 @@ Within the TradingView adapter, `TradingViewDataSource::batch_candles` (`src/dat
 
 Within the Twelve Data adapter, `TwelveDataDataSource::batch_candles` (`src/data/twelvedata.rs`) overrides the default sequential trait impl and fans out one REST `/time_series` request per `CandleRequest` concurrently via `futures::future::try_join_all`. Twelve Data's WebSocket (`wss://ws.twelvedata.com/v1/quotes/price`) only streams live tick prices — it cannot serve historical OHLCV bars — so REST `/time_series` remains the only transport for backfill candles, and the optimization is purely about parallelizing those REST round-trips. All requests still flow through the shared `retry::with_retry` wrapper.
 
+## Pine Script Parity & Panel Report (Phase 1.7 — Complete)
+
+Phase 1.7 (2026-05-26 → 2026-06-05) brought scanner/strategy output to functional parity with the TradingView Pine reference panels for all five asset classes. Pre-1.7 panel parity was ~15–20%; post-1.7 the panel is fully reproducible row-for-row, validated by the parity test harness. Detailed sub-phase log lives in `docs/phase1_pine_parity_plan.md`. Summary of what changed:
+
+### Strategy package (`src/strategy/`)
+
+Grew from a single `signals.rs` evaluator into a 12-module package:
+
+- `signals.rs` — 6-layer evaluator (Trend, HTF bias, EMA HTF, Momentum, Volume, Entry, Anti-Trap, Regime/Session). Now threads a `map_plan` projection through every Wait short-circuit so panel rows populate on `NO TRADE` bars.
+- `panel.rs` — `PanelReport` struct mirroring every Pine reference-panel row: PUTUSAN, TRADE SCORE (with `TradeScoreStatus::TrapBlocked` for trap-blocked bars), NEXT TRADE window, BIAS / CONF (Pine vote-ratio semantics, not weighted analog), SESI (per-asset annotations — Gold gets `THIN EXCHANGE` + `XAU BELI/JUAL` chips), FLOW (Pine-exact phrasing), EW1/2/3 (status + price), DEEP RISK (status + price), TRAP GATE, ENTRY IDEAL, WAKTU ENTRY, SL (price + ATR width + WIDE label), TP1/2/3 (price + probability + label), ETA TP1-3, RECLAIM. `PanelAssetExtras` carries per-asset annotations (xauusd_bias, htf_long/short_score, rvol/cmf/obv_slope/rs_vs_ihsg).
+- `mtf.rs` — multi-timeframe aggregator producing M1/M5/M15/H1/H4/D1/W1/MN consensus + microTrend (Phase 1.7.3, done 2026-06-01).
+- `guard_state.rs` — stateful counters: trap cooldown, shock freeze, deep reclaim, SMC trend state (Phase 1.7.4).
+- `trap_guard.rs` — V61.8 flow engine + 8 trap types (Clean, BullTrap, BearTrap, LiqSweep, Distribution, Accumulation, SlowHunt, StopHunt).
+- `plan_context.rs` — flow/probability gates that drive the entry plan.
+- `entry_plan.rs` + `sl_engine.rs` + `tp_engine.rs` — Pine V61.9 EW engine (swing/VWAP/EMA-anchored, session-reachable, liquidity-capped, flow-adaptive, probability-scored). SL has a Wide-vs-Normal classifier; TP rows carry probabilities and a `LOWPROB` label.
+- `session.rs` — WIB cutoffs aligned to Pine (Asia/Europe/USA/IDX/RolloverAvoid).
+- `confidence.rs` — weighted analog score retained for the `MIN ≥ threshold` gate even though the panel renders vote ratios.
+
+### Per-asset-class evaluators (`src/assets/`)
+
+`AssetEvaluator` trait per `src/assets/{btc, altcoin, gold, forex, stocks_idx}.rs` (Phase 1.7.8, done 2026-05-29). BTC V61.9 / Altcoin V62 adaptive / Gold V1 with XAUUSD proxy bias / Forex V58 with HTF aggregate (H4 + D1) / IDX V5 with RVOL/CMF/OBV/RS gauges.
+
+### Indicators added in Phase 1.7
+
+`src/indicators/{cmf, obv, rvol, htf_bias, relative_strength}.rs` (Phase 1.7.7, done 2026-05-28). Brings the indicator count from 13 to 18 modules.
+
+### Configuration additions
+
+`config/default.toml` gained the V61.4–V62.0 knobs (session volume baseline, breakout volume ratio, BoS/CHoCH close buffers, liquidity equal-ATR, OB validation, momentum decay, EW micro spacing, structure edge, RR floor) plus `[assets.{altcoin,gold,forex,stocks_idx}]` per-asset overrides (Phase 1.7.12, done 2026-06-02). Forex `EURUSD` and Gold `OANDA:XAUUSD` symbol examples are included.
+
+### Surfaces consuming the panel
+
+- `src/alerts/telegram.rs::format_panel` emits the full Pine row set with prices, status emoji, and asset-extra rows (XAU PROXY for Gold, HTF BIAS for Forex, RVOL/CMF/OBV SLOPE/RS vs IHSG for IDX).
+- `GET /panel/{symbol}` — HTML rendering of the panel for browser inspection.
+- `GET /signals/{symbol}` — JSON shape including the `PanelReport` for tooling consumption.
+- `coinnesia export-panel <symbol> <timeframe>` CLI subcommand — runs one scan cycle and prints the `PanelReport` as pretty JSON on stdout (stderr-only logging keeps the JSON pristine for piping into `diff`/`jq`).
+
+### Parity test harness
+
+`tests/parity.rs` (Phase 1.7.13) mounts 5 asset-class suites (`btc_v619`, `altcoin_v62`, `gold_v1`, `forex_v58`, `idx_v5`) backed by deterministic candle fixtures and committed reference panel JSON. Golden-file comparison; regenerate via `UPDATE_PARITY_FIXTURES=1 cargo test --test parity`. The compare uses text equality on serialized JSON to dodge `serde_json::Value`'s lossy float roundtrip (sub-phase 1.7.15).
+
 ## Priority Order
 
 1. Complete live/paper trading execution around the existing exchange trait.
@@ -248,38 +290,44 @@ Within the Twelve Data adapter, `TwelveDataDataSource::batch_candles` (`src/data
 ## Scan Pipeline — Detailed Architecture
 
 This section documents the end-to-end data flow of one scan cycle, as verified against the
-running implementation (`scan-once` command output, 2026-05-23).
+running implementation (`scan-once` command output, baseline captured 2026-05-23, updated post-Phase 1.7).
 
 ### Call graph
 
 ```
 main.rs: Command::ScanOnce
-└── Scanner::scan_once()                              scanner/mod.rs:73
-    ├── Scanner::ingest()                             scanner/mod.rs:89
-    │   ├── proxy::fetch_once_per_cycle()             data/proxy.rs:20
-    │   │   └── PerSymbolMarketData::batch_candles()  data/mod.rs:205
-    │   │       ├── TradingViewDataSource::batch_candles()  data/tradingview.rs:132
+└── Scanner::scan_once()                              scanner/mod.rs
+    ├── Scanner::ingest()                             scanner/mod.rs
+    │   ├── proxy::fetch_once_per_cycle()             data/proxy.rs
+    │   │   └── PerSymbolMarketData::batch_candles()  data/mod.rs
+    │   │       ├── TradingViewDataSource::batch_candles()  data/tradingview.rs
     │   │       │   └── try_join_all over (timeframe, limit) groups
     │   │       │       └── tvdata-rs::download_history_map()  (chart WebSocket, shared client)
     │   │       └── .unwrap_or_default()              (proxy failure = non-fatal)
-    │   └── PerSymbolMarketData::batch_candles()      data/mod.rs:205
+    │   └── PerSymbolMarketData::batch_candles()      data/mod.rs
     │       └── BinanceDataSource::candles()  ×N      data/binance.rs (via binance-sdk REST)
-    ├── Scanner::analyze()                            scanner/mod.rs:133
+    ├── Scanner::analyze()                            scanner/mod.rs
     │   └── [per symbol, tokio::spawn, bounded semaphore]
-    │       └── StrategyEngine::evaluate()            strategy/mod.rs:23
-    │           └── SignalGenerator::evaluate()       strategy/signals.rs:66
-    │               ├── IndicatorSnapshot::new()      (all 14 indicators)
+    │       └── StrategyEngine::evaluate()            strategy/mod.rs
+    │           └── SignalGenerator::evaluate()       strategy/signals.rs
+    │               ├── IndicatorSnapshot::new()      (all 18 indicators incl. CMF/OBV/RVOL/HTF/RS)
+    │               ├── MtfAggregator (consensus + microTrend) strategy/mtf.rs
+    │               ├── AssetEvaluator dispatch       assets/{btc,altcoin,gold,forex,stocks_idx}.rs
     │               ├── Layer 1: classify_regime()    indicators/regime.rs
     │               ├── Layer 2: session_allows_asset()  strategy/session.rs
-    │               ├── Layer 3–4: evaluate_direction() ×2  strategy/signals.rs
+    │               ├── Layer 3–4: evaluate_direction() ×2  strategy/signals.rs (8 hard layers)
     │               │   └── ConfidenceScore::from_sides()   strategy/confidence.rs
-    │               ├── Layer 5: evaluate_trap_guard()  strategy/trap_guard.rs
-    │               ├── Layer 6: directional_gap check
-    │               └── EntryPlanCalculator::calculate()  strategy/entry_plan.rs
-    └── ScanPublisher::publish()                      scanner/mod.rs:305
-        ├── cache_snapshots() → Valkey               (ScanSnapshot, SignalSnapshot)
+    │               ├── Layer 5: evaluate_trap_guard()  strategy/trap_guard.rs (V61.8 flow engine)
+    │               ├── Layer 6: directional_gap + GuardState counters strategy/guard_state.rs
+    │               ├── EntryPlanCalculator::calculate_from_context()  strategy/entry_plan.rs
+    │               │   ├── plan_context.rs (flow/probability gates)
+    │               │   ├── sl_engine.rs (WIDE/NORMAL classifier)
+    │               │   └── tp_engine.rs (TP1/2/3 + probability label)
+    │               └── PanelReport::build()            strategy/panel.rs (every Pine row)
+    └── ScanPublisher::publish()                      scanner/mod.rs
+        ├── cache_snapshots() → Valkey               (ScanSnapshot, SignalSnapshot inc. panel)
         ├── signal_record() → Postgres signal_evaluations
-        ├── alert_job() → Postgres alert_jobs
+        ├── alert_job() → Postgres alert_jobs (Telegram renders PanelReport)
         └── cache.publish_json("signals", …) → Valkey pub/sub
 ```
 
@@ -371,8 +419,10 @@ Twelve Data is the replacement. The `YahooDataSource`, `YahooDataSourceConfig`, 
 
 ## Conclusion
 
-The current architecture has cleared the Phase 0 runtime foundation and Phase 1 core scanner
-requirements. It is ready to move into Phase 2 trading/exchange execution work, with the main
-residual risks concentrated in live order safety, portfolio/risk reconciliation, richer operational
-APIs, and benchmarked scanner throughput.
+The current architecture has cleared the Phase 0 runtime foundation, the Phase 1 core scanner
+requirements, the Phase 1.5 resilience/HFT work, the Phase 1.6 per-symbol data source routing,
+and the Phase 1.7 Pine V61.x parity + PanelReport buildout (15 sub-phases, 2026-05-26 → 2026-06-05).
+It is ready to move into Phase 2 trading/exchange execution work, with the main residual risks
+concentrated in live order safety, portfolio/risk reconciliation, richer operational APIs (trading
+/orders/positions/portfolio still pending), and benchmarked scanner throughput.
 

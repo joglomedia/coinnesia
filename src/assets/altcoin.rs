@@ -1,7 +1,12 @@
 use crate::{
     assets::AssetEvaluator,
     config::AppConfig,
-    strategy::{signals::IndicatorSnapshot, SignalDirection},
+    strategy::{
+        plan_context::{f_clamp, FlowState},
+        session::MarketSession,
+        signals::IndicatorSnapshot,
+        SignalDirection,
+    },
     AssetClass, Timeframe,
 };
 
@@ -49,5 +54,39 @@ impl AssetEvaluator for AltcoinEvaluator {
             ));
         }
         None
+    }
+
+    /// Pine V62 line 388:
+    /// ```text
+    /// altEWFactor = f_clamp(
+    ///     (altWildVol ? altEWVolCompress : 1.0)
+    ///   * (altThinFlow ? altEWThinCompress : 1.0)
+    ///   * (sess == "ASIA"  ? 0.92
+    ///      : sess == "EROPA" ? 0.98
+    ///      : 1.02),                                  // USA / else
+    ///     0.42, 1.08)
+    /// ```
+    /// Same wildVol/thinFlow proxies as Gold; the Asia leg drops to 0.92 and
+    /// USA boosts to 1.02 (Pine treats USA as the highest-flow session for
+    /// majors/mids). Token-specific `altProfile` knobs remain a 1.7.16 Gap F
+    /// follow-up.
+    fn ew_compression_factor(
+        &self,
+        session: MarketSession,
+        flow: FlowState,
+        shock_active: bool,
+    ) -> f64 {
+        const ALT_EW_VOL_COMPRESS: f64 = 0.86;
+        const ALT_EW_THIN_COMPRESS: f64 = 0.90;
+        let alt_wild_vol = shock_active;
+        let alt_thin_flow = matches!(flow, FlowState::Low);
+        let vol_mult = if alt_wild_vol { ALT_EW_VOL_COMPRESS } else { 1.0 };
+        let flow_mult = if alt_thin_flow { ALT_EW_THIN_COMPRESS } else { 1.0 };
+        let session_mult = match session {
+            MarketSession::Asia => 0.92,
+            MarketSession::Europe => 0.98,
+            _ => 1.02, // USA, Idx, RolloverAvoid all map to Pine's else-branch
+        };
+        f_clamp(vol_mult * flow_mult * session_mult, 0.42, 1.08)
     }
 }

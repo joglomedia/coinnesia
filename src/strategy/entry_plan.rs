@@ -98,10 +98,32 @@ impl<'a> EntryPlanCalculator<'a> {
             high: center + zone_width,
         };
 
-        let ew1_max_eff = self.config.ew1_max_atr;
-        let ew2_eff = self.config.ew2_atr;
-        let ew3_eff = self.config.ew3_atr;
-        let deep_eff = self.config.deep_add_atr;
+        // Sub-phase 1.7.16 Gap C — Pine `ew*Eff` projection (Gold V1
+        // lines 831-834, Altcoin V62 lines 804-807, BTC V61.9 lines
+        // 741-743). Three-tier clamp on each spacing:
+        //   isDaily   → daily cap (ew2 ≤ 0.34, ew3 ≤ 0.62, deep ≤ 0.88)
+        //   sideways  → sideways cap (ew2 ≤ 0.36, ew3 ≤ 0.66, deep ≤ 0.96)
+        //   else      → raw config value
+        // Then multiplied by `ctx.alt_ew_factor` (asset-specific EW
+        // compression via `AssetEvaluator::ew_compression_factor`).
+        // `deep_eff` uses an inner clamp on `alt_ew_factor + 0.08` per Pine
+        // — not the same as clamping `alt_ew_factor` directly.
+        let pine_clamp = |raw: f64, daily_cap: f64, sideways_cap: f64| -> f64 {
+            if ctx.is_daily {
+                raw.min(daily_cap)
+            } else if ctx.is_sideways() {
+                raw.min(sideways_cap)
+            } else {
+                raw
+            }
+        };
+        let ew1_max_eff = self.config.ew1_max_atr * ctx.alt_ew_factor;
+        let ew2_eff =
+            pine_clamp(self.config.ew2_atr, 0.34, 0.36) * ctx.alt_ew_factor;
+        let ew3_eff =
+            pine_clamp(self.config.ew3_atr, 0.62, 0.66) * ctx.alt_ew_factor;
+        let deep_eff = pine_clamp(self.config.deep_add_atr, 0.88, 0.96)
+            * super::plan_context::f_clamp(ctx.alt_ew_factor + 0.08, 0.50, 1.12);
 
         match ctx.direction {
             SignalDirection::Long => {
@@ -264,6 +286,8 @@ mod tests {
             vol_shock: false,
             shock_active: false,
             flow_trap_block: false,
+            alt_ew_factor: 1.0,
+            is_daily: false,
         }
     }
 

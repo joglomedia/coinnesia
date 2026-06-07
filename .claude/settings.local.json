@@ -29,7 +29,16 @@
       "Bash(UPDATE_PARITY_FIXTURES=1 cargo test --test parity btc_v619 -- --nocapture)",
       "Bash(awk NR>=395 && NR<=460 *)",
       "Bash(awk NR>=460 && NR<=475 *)",
-      "Bash(RUST_TEST_THREADS=1 cargo test --lib app::supervisor)"
+      "Bash(RUST_TEST_THREADS=1 cargo test --lib app::supervisor)",
+      "Bash(xargs -n1 basename)",
+      "Bash(RUST_TEST_THREADS=1 cargo test --test parity)",
+      "Bash(awk NR>=670 && NR<=755 *)",
+      "Bash(awk NR>=1130 && NR<=1145 *)",
+      "Bash(awk 'NR>=100 && NR<=250' /Users/mac/MasEDI/Playground/Trading_Bot/coinnesia-signal-bot/src/strategy/entry_plan.rs)",
+      "Bash(awk NR>=870 && NR<=925 *)",
+      "Bash(awk NR>=820 && NR<=900 *)",
+      "Bash(grep -n \"                0.0,$\" /Users/mac/MasEDI/Playground/Trading_Bot/coinnesia-signal-bot/src/strategy/signals.rs)",
+      "Bash(RUST_TEST_THREADS=1 cargo test --lib)"
     ]
   }
 }
