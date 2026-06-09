@@ -70,6 +70,59 @@ pub(crate) trait AssetEvaluator {
     ) -> f64 {
         1.0
     }
+
+    /// Sub-phase 1.7.16 Gap G — Pine `altSLFactor` (Gold V1 line 402, Altcoin
+    /// V62 line 390). Multiplies the absolute `maxSLDistanceATR` cap so the
+    /// SL engine can accept a wider stop under chaotic conditions. Returns
+    /// `1.0` by default (no extension). Gold / Altcoin override with their
+    /// V1 / V62 formulas; clamped to `[1.0, 1.55]` and `[1.0, 1.85]`
+    /// respectively in those impls.
+    fn sl_extension_factor(
+        &self,
+        _session: MarketSession,
+        _flow: FlowState,
+        _shock_active: bool,
+    ) -> f64 {
+        1.0
+    }
+
+    /// Sub-phase 1.7.16 Gap H — Pine `altTPFactor` (Gold V1 line 401, Altcoin
+    /// V62 line 389). Per-asset multiplier on the TP raw distance
+    /// (`base ± atr * tpNATR * trendTPFactor * sessTPFactor * altTPFactor`).
+    /// Returns `1.0` by default (no compression). Gold / Altcoin override;
+    /// clamped to `[0.55, 1.08]` and `[0.38, 1.10]` respectively.
+    fn tp_compression_factor(
+        &self,
+        _session: MarketSession,
+        _flow: FlowState,
+        _shock_active: bool,
+    ) -> f64 {
+        1.0
+    }
+
+    /// Sub-phase 1.7.17 commit 4 — Pine V63 Gold direction adapter (Gold V1
+    /// lines 731-745, Altcoin V62 analogous block). Returns a single
+    /// post-clamp score contribution that the accumulator adds verbatim.
+    /// The default returns `0.0` (no adjustment, matches BTC V61.9 /
+    /// Forex V58 / IDX V5 which omit this block). Gold and Altcoin
+    /// override with their respective V63 / V62 adapters covering:
+    ///   - LTF edge weighting (`consensusScore * 0.07 * altLTFWeight`)
+    ///   - Directional proxy bonus (`+goldProxyWeight` / `-goldProxyWeight`)
+    ///   - Reversal-OK +8 bonus
+    ///   - Macro-conflict relax (`+8 * altHTFRelax`)
+    ///   - Opposing-proxy −8 penalty
+    ///
+    /// Token-specific Pine signals (`altClean`, `altChaos`,
+    /// `altFakeImpulse`, `liqBullReclaim`) are approximated via the
+    /// available `flow`/`shock_active` proxies — full refinement tracked
+    /// under sub-phase 1.7.16 Gap F.
+    fn score_adjustments(
+        &self,
+        _direction: SignalDirection,
+        _snapshot: &crate::strategy::signals::IndicatorSnapshot<'_>,
+    ) -> f64 {
+        0.0
+    }
 }
 
 /// Look up the `AssetEvaluator` for the given class. Returns a boxed trait

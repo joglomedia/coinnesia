@@ -1060,108 +1060,156 @@ pub(crate) fn evaluate_direction(
     snapshot: &IndicatorSnapshot<'_>,
     config: &AppConfig,
 ) -> DirectionEvaluation {
+    // Sub-phase 1.7.17 — Pine-style per-sub-layer accumulator. Each sub-layer
+    // produces a boolean predicate; the profile (`config/profiles.rs`) supplies
+    // a `WeightPair { pass, fail }` per layer key. Pine V1 line 701
+    // (`structureShortOK ? 8 : -14`) is the canonical fail-weight example —
+    // most layers have `fail = 0.0`.
+    //
+    // The raw pre-clamp range is wide on purpose (~[-94, +200] for Gold) so
+    // clean trend bars saturate the [0, 100] clamp the way Pine does. Penalty
+    // sub-layers (commit 2: antiChop / strongConflict / macroConflict /
+    // volShock) and the V61.6 micro-trend / V61.7 consensus weighting
+    // (commit 3) plus the V63 Gold direction adapter (commit 4) feed the
+    // same accumulator.
     let profile_map = profiles::default_profiles();
     let profile = profile_map.get(&asset_class);
     let mut score = 0.0;
-    let mut missing = Vec::new();
+    let mut missing: Vec<&'static str> = Vec::new();
+    let mut add = |key: &'static str, predicate: bool| {
+        let pair = profile
+            .map(|p| p.weight(key))
+            .unwrap_or(profiles::WeightPair::new(0.0, 0.0));
+        if predicate {
+            score += pair.pass;
+        } else {
+            score += pair.fail;
+            // Only the hard hard-pass subset participates in the `passes`
+            // boolean below; missing-reason tagging tracks every layer that
+            // failed for debugging.
+            missing.push(key);
+        }
+    };
 
-    let trend = trend_layer(direction, snapshot);
-    let momentum = momentum_layer(direction, snapshot);
-    let volume = volume_layer(direction, snapshot);
-    let entry = entry_layer(direction, snapshot, config);
-    let anti_trap = anti_trap_layer(direction, snapshot, config);
-    let regime_session = snapshot.regime.allows_signals();
-    let htf_bias = htf_bias_layer(direction, snapshot);
-    let ema_htf = ema_htf_layer(direction, snapshot);
-    // Asset-class soft layers. Each returns true when the gate is satisfied OR
-    // when its inputs are unavailable (pass-through), matching Pine's
-    // "no-data → no-penalty" semantics. Profile weights gate which classes
-    // actually receive credit for the layer.
-    let xauusd_proxy = xauusd_proxy_layer(direction, snapshot);
-    let ihsg_benchmark = ihsg_benchmark_layer(direction, snapshot);
-    let cmf_obv = cmf_obv_layer(direction, snapshot);
-    let rvol_value_gate = rvol_value_gate_layer(snapshot, config);
-    let downside_risk = downside_risk_layer(direction, snapshot);
-    let atr_news = atr_news_layer(snapshot);
+    // ── Hard Pine sub-layers ─────────────────────────────────────────────
+    let bias_htf_4h = bias_htf_4h_layer(direction, snapshot);
+    let bias_htf_1d = bias_htf_1d_layer(direction, snapshot);
+    let trend_dir = trend_dir_layer(direction, snapshot);
+    let trend_200 = trend_200_layer(direction, snapshot);
+    let macd = macd_sub_layer(direction, snapshot);
+    let rsi = rsi_sub_layer(direction, snapshot);
+    let dmi = dmi_sub_layer(direction, snapshot);
+    let adx_band = adx_band_layer(snapshot);
+    let vwap = vwap_sub_layer(direction, snapshot);
+    let mtf_dominant = mtf_dominant_layer(direction, snapshot);
+    let structure_ok = structure_sub_layer(direction, snapshot);
+    let smc_bonus = smc_bonus_layer(direction, snapshot);
+    let ltf_consensus = ltf_consensus_layer(direction, snapshot);
+    let liquidity = liquidity_sub_layer(direction, snapshot, config);
+    let support_resistance = support_resistance_sub_layer(direction, snapshot, config);
+    let volume = volume_sub_layer(direction, snapshot);
+    let anti_trap = anti_trap_sub_layer(direction, snapshot, config);
+    let session = snapshot.regime.allows_signals();
 
-    add_layer(
-        &mut score,
-        profile,
-        &["structure", "ema"],
-        trend,
-        &mut missing,
-        "trend",
+    add("bias_htf_4h", bias_htf_4h);
+    add("bias_htf_1d", bias_htf_1d);
+    add("trend_dir", trend_dir);
+    add("trend_200", trend_200);
+    add("macd", macd);
+    add("rsi", rsi);
+    add("dmi", dmi);
+    add("adx_band", adx_band);
+    add("vwap", vwap);
+    add("mtf_dominant", mtf_dominant);
+    add("structure", structure_ok);
+    add("smc_bonus", smc_bonus);
+    add("ltf_consensus", ltf_consensus);
+    add("liquidity", liquidity);
+    add("support_resistance", support_resistance);
+    add("volume", volume);
+    add("anti_trap", anti_trap);
+    add("session", session);
+
+    // ── Soft asset-class sub-layers (Gold proxy, IDX benchmark, etc.) ───
+    add("xauusd_proxy", xauusd_proxy_layer(direction, snapshot));
+    add("ihsg_benchmark", ihsg_benchmark_layer(direction, snapshot));
+    add("cmf_obv", cmf_obv_layer(direction, snapshot));
+    add("rvol_value_gate", rvol_value_gate_layer(snapshot, config));
+    add("downside_risk", downside_risk_layer(direction, snapshot));
+    add("atr_news", atr_news_layer(snapshot));
+
+    // ── Sub-phase 1.7.17 commit 2: Pine penalty stack ───────────────────
+    // These layers carry NEGATIVE `pass` weights in the profile tables —
+    // when the bad condition fires (e.g. anti_chop = true), the
+    // accumulator subtracts the configured penalty. The fail branch
+    // (penalty NOT firing) contributes `0.0`. Pine V1 lines 723-726
+    // (mirror for BTC V61.9 lines 624-627).
+    add("anti_chop", anti_chop_layer(snapshot));
+    add(
+        "strong_conflict",
+        strong_conflict_layer(direction, snapshot),
     );
-    add_layer(
-        &mut score,
-        profile,
-        &["htf_bias"],
-        htf_bias,
-        &mut missing,
-        "htf_bias",
+    add(
+        "macro_conflict",
+        macro_conflict_layer(direction, snapshot),
     );
-    add_layer(
-        &mut score,
-        profile,
-        &["ema_htf"],
-        ema_htf,
-        &mut missing,
-        "ema_htf",
-    );
-    add_layer(
-        &mut score,
-        profile,
-        &["rsi", "macd", "momentum", "adx", "adx_dmi"],
-        momentum,
-        &mut missing,
-        "momentum",
-    );
-    add_layer(
-        &mut score,
-        profile,
-        &["volume", "token_volume", "tick_volume"],
-        volume,
-        &mut missing,
-        "volume",
-    );
-    add_layer(
-        &mut score,
-        profile,
-        &["liquidity", "support_resistance", "vwap", "ltf_consensus"],
-        entry,
-        &mut missing,
-        "entry",
-    );
-    add_layer(
-        &mut score,
-        profile,
-        &["wick_chaos", "atr_expansion"],
-        anti_trap,
-        &mut missing,
-        "anti_trap",
-    );
-    add_layer(
-        &mut score,
-        profile,
-        &["session"],
-        regime_session,
-        &mut missing,
-        "regime_session",
-    );
-    // Soft asset-class layers — only contribute weight when the active class's
-    // profile carries the corresponding key.
-    add_soft_layer(&mut score, profile, &["xauusd_proxy"], xauusd_proxy);
-    add_soft_layer(&mut score, profile, &["ihsg_benchmark"], ihsg_benchmark);
-    add_soft_layer(&mut score, profile, &["cmf_obv"], cmf_obv);
-    add_soft_layer(&mut score, profile, &["rvol_value_gate"], rvol_value_gate);
-    add_soft_layer(&mut score, profile, &["downside_risk"], downside_risk);
-    add_soft_layer(&mut score, profile, &["atr_news"], atr_news);
+    add("vol_shock", vol_shock_layer(snapshot));
+
+    // ── Sub-phase 1.7.17 commit 3: V61.6 micro-trend override (+14/-18)
+    // and V61.7 consensus weighting (+0.22/-0.18 × score) ───────────────
+    // These are direction-symmetric *graded* contributions (Pine BTC V61.9
+    // lines 648-655): the matching-side bonus and the opposite-side
+    // penalty both apply on the same bar. Not gated by the asset profile —
+    // these are universal Pine multipliers shared across V1 / V62 / V58 /
+    // V5 / V61.9.
+    let (micro_same_dir, micro_opposite_dir) = match direction {
+        SignalDirection::Long => (
+            snapshot.micro_trend == SignalDirection::Long,
+            snapshot.micro_trend == SignalDirection::Short,
+        ),
+        SignalDirection::Short => (
+            snapshot.micro_trend == SignalDirection::Short,
+            snapshot.micro_trend == SignalDirection::Long,
+        ),
+        SignalDirection::Wait => (false, false),
+    };
+    if micro_same_dir {
+        score += 14.0;
+    }
+    if micro_opposite_dir {
+        score -= 18.0;
+    }
+    let (consensus_same, consensus_opposite) = match direction {
+        SignalDirection::Long => (snapshot.consensus.long_score, snapshot.consensus.short_score),
+        SignalDirection::Short => (snapshot.consensus.short_score, snapshot.consensus.long_score),
+        SignalDirection::Wait => (0.0, 0.0),
+    };
+    score += consensus_same * 0.22;
+    score -= consensus_opposite * 0.18;
+
+    // ── Sub-phase 1.7.17 commit 4: V63 asset-specific direction adapter ─
+    // Gold and Altcoin add their Pine V63 / V62 adapter contributions
+    // (LTF edge weighting, proxy directional bonus, reversal allowance,
+    // macro-conflict relax). BTC / Forex / IDX inherit the `0.0` default.
+    score += crate::assets::evaluator_for(asset_class).score_adjustments(direction, snapshot);
 
     let trap = evaluate_trap_guard(snapshot.candles, &config.trap_guard, direction);
     score = (score - trap.penalty).clamp(0.0, 100.0);
+
+    // `passes` mirrors Pine `longDirectionOK` / `shortDirectionOK` (BTC V61.9
+    // line 1020-1021): direction is considered only when structure agrees,
+    // the EMA stack matches the trend direction, the candle isn't actively
+    // trapping, and the regime/session allows trading. The score threshold
+    // (`min_confidence_*`) and consensus gap are checked separately
+    // downstream in `evaluate_inner`. Each individual sub-layer (RSI band,
+    // ADX band, MACD, DMI, volume, vwap, ...) contributes to the SCORE but
+    // doesn't gate emission — Pine treats them as weighted accumulators,
+    // not hard pass/fail gates.
+    let passes = trend_dir && structure_ok && anti_trap && session;
+
     DirectionEvaluation {
         score,
-        passes: trend && momentum && volume && entry && anti_trap && regime_session,
+        passes,
         blocks_signal: trap.blocks_signal,
         reason: if missing.is_empty() {
             "all_layers_pass".to_owned()
@@ -1171,41 +1219,368 @@ pub(crate) fn evaluate_direction(
     }
 }
 
-fn add_layer(
-    score: &mut f64,
-    profile: Option<&profiles::AssetProfile>,
-    keys: &[&str],
-    passed: bool,
-    missing: &mut Vec<&'static str>,
-    name: &'static str,
-) {
-    if passed {
-        let weight = profile
-            .map(|profile| keys.iter().filter_map(|key| profile.weights.get(key)).sum())
-            .unwrap_or(0.0);
-        *score += weight;
-    } else {
-        missing.push(name);
+// ── Sub-phase 1.7.17 sub-layer helpers ───────────────────────────────────
+//
+// These mirror Pine V1 line 691-710 sub-layer accumulator predicates.
+// Each returns `bool`; the per-asset profile in `config/profiles.rs`
+// supplies the `WeightPair { pass, fail }` consumed by the closure in
+// `evaluate_direction`.
+
+/// Pine `bias4h == JUAL / BELI`. Reads the H4 MTF summary if present;
+/// abstains (returns `false`, contributing the fail weight which is typically
+/// `0.0`) when the MTF map is empty so symbols without an H4 ingest don't
+/// accumulate spurious bias credit. SIDEWAYS bias does not match either
+/// direction here — Pine separates SIDEWAYS into a +5 / +4 fallback that
+/// the calling profile encodes via `bias_htf_4h_sideways` (not modelled in
+/// commit 1; future tuning knob).
+fn bias_htf_4h_layer(direction: SignalDirection, snapshot: &IndicatorSnapshot<'_>) -> bool {
+    let Some(summary) = snapshot.mtf.get(&Timeframe::H4) else {
+        return false;
+    };
+    matches!(
+        (direction, summary.bias),
+        (SignalDirection::Long, SignalDirection::Long)
+            | (SignalDirection::Short, SignalDirection::Short)
+    )
+}
+
+/// Pine `bias1d == JUAL / BELI`. Same shape as `bias_htf_4h_layer` but for D1.
+fn bias_htf_1d_layer(direction: SignalDirection, snapshot: &IndicatorSnapshot<'_>) -> bool {
+    let Some(summary) = snapshot.mtf.get(&Timeframe::D1) else {
+        return false;
+    };
+    matches!(
+        (direction, summary.bias),
+        (SignalDirection::Long, SignalDirection::Long)
+            | (SignalDirection::Short, SignalDirection::Short)
+    )
+}
+
+/// Pine `trendUp = close > emaFast and emaFast > emaSlow` (mirror for short).
+fn trend_dir_layer(direction: SignalDirection, snapshot: &IndicatorSnapshot<'_>) -> bool {
+    if !snapshot.ema_fast.ready || !snapshot.ema_slow.ready {
+        return false;
+    }
+    let close = snapshot.latest.close;
+    match direction {
+        SignalDirection::Long => {
+            close > snapshot.ema_fast.value && snapshot.ema_fast.value > snapshot.ema_slow.value
+        }
+        SignalDirection::Short => {
+            close < snapshot.ema_fast.value && snapshot.ema_fast.value < snapshot.ema_slow.value
+        }
+        SignalDirection::Wait => false,
     }
 }
 
-/// Like `add_layer` but never appends to `missing`. Used for soft per-class
-/// layers — Pine treats the underlying gate as an additive bonus rather than a
-/// hard block, so a "no-data → no-credit" outcome should not poison the
-/// `passes` chain.
-fn add_soft_layer(
-    score: &mut f64,
-    profile: Option<&profiles::AssetProfile>,
-    keys: &[&str],
-    passed: bool,
-) {
-    if !passed {
-        return;
+/// Pine `trend200ShortOK = close < emaTrend` (mirror for long). Abstains when
+/// EMA200 is still warming up so short series don't get a free pass.
+fn trend_200_layer(direction: SignalDirection, snapshot: &IndicatorSnapshot<'_>) -> bool {
+    if !snapshot.ema_trend.ready {
+        return false;
     }
-    let weight = profile
-        .map(|profile| keys.iter().filter_map(|key| profile.weights.get(key)).sum())
-        .unwrap_or(0.0);
-    *score += weight;
+    let close = snapshot.latest.close;
+    match direction {
+        SignalDirection::Long => close > snapshot.ema_trend.value,
+        SignalDirection::Short => close < snapshot.ema_trend.value,
+        SignalDirection::Wait => false,
+    }
+}
+
+/// Pine `macdShortOK = macd < signal and hist < 0` (mirror for long).
+fn macd_sub_layer(direction: SignalDirection, snapshot: &IndicatorSnapshot<'_>) -> bool {
+    let macd = &snapshot.macd;
+    if !macd.macd.ready || !macd.signal.ready || !macd.histogram.ready {
+        return false;
+    }
+    match direction {
+        SignalDirection::Long => macd.macd.value > macd.signal.value && macd.histogram.value > 0.0,
+        SignalDirection::Short => macd.macd.value < macd.signal.value && macd.histogram.value < 0.0,
+        SignalDirection::Wait => false,
+    }
+}
+
+/// Pine `rsiShortOK = rsi >= 28 and rsi <= 50` (mirror long: 50-72).
+fn rsi_sub_layer(direction: SignalDirection, snapshot: &IndicatorSnapshot<'_>) -> bool {
+    if !snapshot.rsi.ready {
+        return false;
+    }
+    match direction {
+        SignalDirection::Long => (50.0..=72.0).contains(&snapshot.rsi.value),
+        SignalDirection::Short => (28.0..=50.0).contains(&snapshot.rsi.value),
+        SignalDirection::Wait => false,
+    }
+}
+
+/// Pine `diMinus > diPlus` (mirror long).
+fn dmi_sub_layer(direction: SignalDirection, snapshot: &IndicatorSnapshot<'_>) -> bool {
+    let dmi = &snapshot.dmi;
+    if !dmi.di_plus.ready || !dmi.di_minus.ready {
+        return false;
+    }
+    match direction {
+        SignalDirection::Long => dmi.di_plus.value > dmi.di_minus.value,
+        SignalDirection::Short => dmi.di_minus.value > dmi.di_plus.value,
+        SignalDirection::Wait => false,
+    }
+}
+
+/// Pine `adx >= 16 and adx <= 55` — directional but not exhausted.
+fn adx_band_layer(snapshot: &IndicatorSnapshot<'_>) -> bool {
+    if !snapshot.dmi.adx.ready {
+        return false;
+    }
+    (16.0..=55.0).contains(&snapshot.dmi.adx.value)
+}
+
+/// Pine `vwapShortOK = close < vwap` (mirror long). Abstains until VWAP has
+/// computed for the current session.
+fn vwap_sub_layer(direction: SignalDirection, snapshot: &IndicatorSnapshot<'_>) -> bool {
+    if !snapshot.vwap.ready {
+        return false;
+    }
+    let close = snapshot.latest.close;
+    match direction {
+        SignalDirection::Long => close >= snapshot.vwap.value,
+        SignalDirection::Short => close <= snapshot.vwap.value,
+        SignalDirection::Wait => false,
+    }
+}
+
+/// Pine `mtfDominantBias` — majority vote across the MTF summary set.
+/// Returns true when most non-Wait votes match `direction`.
+fn mtf_dominant_layer(direction: SignalDirection, snapshot: &IndicatorSnapshot<'_>) -> bool {
+    if snapshot.mtf.is_empty() {
+        return false;
+    }
+    let (long_votes, short_votes) =
+        snapshot
+            .mtf
+            .values()
+            .fold((0usize, 0usize), |(l, s), summary| match summary.bias {
+                SignalDirection::Long => (l + 1, s),
+                SignalDirection::Short => (l, s + 1),
+                SignalDirection::Wait => (l, s),
+            });
+    match direction {
+        SignalDirection::Long => long_votes > short_votes,
+        SignalDirection::Short => short_votes > long_votes,
+        SignalDirection::Wait => false,
+    }
+}
+
+/// Pine `structureShortOK = bosDown or chochBear` (mirror long). This is the
+/// canonical fail-penalty sub-layer (V1 line 701: `+8 / -14`).
+fn structure_sub_layer(direction: SignalDirection, snapshot: &IndicatorSnapshot<'_>) -> bool {
+    matches!(
+        (direction, snapshot.structure.event),
+        (
+            SignalDirection::Long,
+            StructureEvent::BullishBos | StructureEvent::BullishChoch
+        ) | (
+            SignalDirection::Short,
+            StructureEvent::BearishBos | StructureEvent::BearishChoch
+        )
+    )
+}
+
+/// Pine `smcShortBonus` — a small extra weight when the SMC structure state
+/// and the M15+ MTF summary both agree with `direction`. Modelled here as a
+/// boolean (commit 1); commits 2-4 can swap for a graded contribution if the
+/// gap audit shows it matters.
+fn smc_bonus_layer(direction: SignalDirection, snapshot: &IndicatorSnapshot<'_>) -> bool {
+    let structure_match = structure_sub_layer(direction, snapshot);
+    let mtf_match = snapshot
+        .mtf
+        .get(&Timeframe::M15)
+        .map(|summary| summary.bias == direction)
+        .unwrap_or(false);
+    structure_match && mtf_match
+}
+
+/// Altcoin `ltf_consensus` — M1/M5/M15 triad consensus from the snapshot's
+/// pre-computed `ConsensusResult`. The Altcoin V62 evaluator's extra_gate
+/// already rejects unanimous opposing triads; this layer adds the bonus side.
+fn ltf_consensus_layer(direction: SignalDirection, snapshot: &IndicatorSnapshot<'_>) -> bool {
+    let consensus = &snapshot.consensus;
+    if consensus.voters == 0 {
+        return false;
+    }
+    match direction {
+        SignalDirection::Long => consensus.long_score > consensus.short_score,
+        SignalDirection::Short => consensus.short_score > consensus.long_score,
+        SignalDirection::Wait => false,
+    }
+}
+
+/// Pine `liquidity` — sweep+reclaim or order-block alignment. Combines the
+/// `detect_liquidity_sweep` and `detect_order_blocks` checks that previously
+/// lived inside the `entry_layer` macro.
+fn liquidity_sub_layer(
+    direction: SignalDirection,
+    snapshot: &IndicatorSnapshot<'_>,
+    config: &AppConfig,
+) -> bool {
+    if snapshot.candles.is_empty() {
+        return false;
+    }
+    let atr_tolerance = snapshot.atr.value.max(0.0) * 0.08;
+    let sweep = detect_liquidity_sweep(
+        snapshot.candles,
+        20.min(snapshot.candles.len() - 1),
+        atr_tolerance,
+    );
+    let order_blocks = detect_order_blocks(
+        snapshot.candles,
+        20,
+        config.indicators.ob_displacement_atr,
+    );
+    let sweep_entry = matches!(
+        (direction, sweep),
+        (SignalDirection::Long, Some(sweep)) if sweep.kind == SweepKind::Low && sweep.reclaimed
+    ) || matches!(
+        (direction, sweep),
+        (SignalDirection::Short, Some(sweep)) if sweep.kind == SweepKind::High && sweep.reclaimed
+    );
+    let order_block_entry = order_blocks.iter().any(|block| {
+        block.valid
+            && matches!(
+                (direction, block.kind),
+                (SignalDirection::Long, OrderBlockKind::Bullish)
+                    | (SignalDirection::Short, OrderBlockKind::Bearish)
+            )
+    });
+    sweep_entry || order_block_entry
+}
+
+/// Pine `sr_entry` — support/resistance zone alignment.
+fn support_resistance_sub_layer(
+    direction: SignalDirection,
+    snapshot: &IndicatorSnapshot<'_>,
+    config: &AppConfig,
+) -> bool {
+    if snapshot.candles.is_empty() {
+        return false;
+    }
+    let zones = detect_zones(
+        snapshot.candles,
+        30,
+        snapshot.atr.value.max(0.0) * config.indicators.sr_cluster_atr,
+        6,
+    );
+    match direction {
+        SignalDirection::Long => zones.iter().any(|zone| zone.kind == ZoneKind::Support),
+        SignalDirection::Short => zones.iter().any(|zone| zone.kind == ZoneKind::Resistance),
+        SignalDirection::Wait => false,
+    }
+}
+
+/// Pine combined `volume + clv` sub-layer. Kept as a single layer so the
+/// profile can dial it (Altcoin / IDX weight it high; Forex low).
+fn volume_sub_layer(direction: SignalDirection, snapshot: &IndicatorSnapshot<'_>) -> bool {
+    let flow = snapshot.volume.session_ratio.ready
+        && snapshot.volume.session_ratio.value >= 1.15
+        && !snapshot.volume.decaying;
+    let clv = match direction {
+        SignalDirection::Long => snapshot.shape.close_location_value > 0.0,
+        SignalDirection::Short => snapshot.shape.close_location_value < 0.0,
+        SignalDirection::Wait => false,
+    };
+    flow && clv
+}
+
+/// Pine `anti_trap` — wick shape OK and trap guard not actively blocking.
+fn anti_trap_sub_layer(
+    direction: SignalDirection,
+    snapshot: &IndicatorSnapshot<'_>,
+    config: &AppConfig,
+) -> bool {
+    if snapshot.shape.trap_risk && snapshot.shape.body_ratio < 0.35 {
+        return false;
+    }
+    !evaluate_trap_guard(snapshot.candles, &config.trap_guard, direction).blocks_signal
+}
+
+// ── Sub-phase 1.7.17 commit 2: penalty sub-layers ────────────────────────
+//
+// Each helper returns `true` when the bad condition is happening. The
+// profile's `WeightPair { pass, fail }` carries a NEGATIVE `pass` weight
+// so a firing penalty subtracts from the accumulator. Pine V1 lines
+// 723-726 (mirror for BTC V61.9 lines 624-627).
+
+/// Pine `antiChop` (V1 line 354 approximation). Returns true when the
+/// market is in a chop / sideways regime that the score should be
+/// penalised for. We use the existing `MarketRegime::Sideways` flag plus
+/// a low-ADX backstop (Pine `adx < 13`) so even when the regime
+/// classifier disagrees, ultra-flat tape still triggers the penalty.
+fn anti_chop_layer(snapshot: &IndicatorSnapshot<'_>) -> bool {
+    let regime_chop = matches!(snapshot.regime, MarketRegime::Sideways);
+    let low_adx = snapshot.dmi.adx.ready && snapshot.dmi.adx.value < 13.0;
+    regime_chop || low_adx
+}
+
+/// Pine `strongConflictLong` (line 606) / `strongConflictShort` (line 607).
+/// Long penalty fires when H1 EMA pressure points down AND M15 breaks
+/// down. Short penalty mirrors. We approximate via the M15 + H1 MTF
+/// summaries' EMA stack + bias direction.
+fn strong_conflict_layer(direction: SignalDirection, snapshot: &IndicatorSnapshot<'_>) -> bool {
+    let h1 = match snapshot.mtf.get(&Timeframe::H1) {
+        Some(summary) => summary,
+        None => return false,
+    };
+    let m15 = match snapshot.mtf.get(&Timeframe::M15) {
+        Some(summary) => summary,
+        None => return false,
+    };
+    let h1_short = matches!(h1.ema_trend_above, Some(false)) || h1.bias == SignalDirection::Short;
+    let h1_long = matches!(h1.ema_trend_above, Some(true)) || h1.bias == SignalDirection::Long;
+    let m15_short_break = m15.bias == SignalDirection::Short;
+    let m15_long_break = m15.bias == SignalDirection::Long;
+    match direction {
+        SignalDirection::Long => h1_short && m15_short_break,
+        SignalDirection::Short => h1_long && m15_long_break,
+        SignalDirection::Wait => false,
+    }
+}
+
+/// Pine `macroConflictLong` (line 608) / `macroConflictShort` (line 609).
+/// Long penalty fires when W1 or MN bias votes against the trade. We
+/// look up Pine's `bias1w` / `bias1m` via Rust's W1 / MN MTF summaries.
+fn macro_conflict_layer(direction: SignalDirection, snapshot: &IndicatorSnapshot<'_>) -> bool {
+    let bias_w1 = snapshot
+        .mtf
+        .get(&Timeframe::W1)
+        .map(|s| s.bias)
+        .unwrap_or(SignalDirection::Wait);
+    let bias_mn = snapshot
+        .mtf
+        .get(&Timeframe::Mn1)
+        .map(|s| s.bias)
+        .unwrap_or(SignalDirection::Wait);
+    let opposite = match direction {
+        SignalDirection::Long => SignalDirection::Short,
+        SignalDirection::Short => SignalDirection::Long,
+        SignalDirection::Wait => return false,
+    };
+    bias_w1 == opposite || bias_mn == opposite
+}
+
+/// Pine `volShock` (line 328): `rangeShock || volZ >= shockThreshold ||
+/// wickRatio >= 0.55`. We approximate via the existing volume Z-score
+/// (>= 3.0 already classified as shock by build_plan_context) plus the
+/// candle shape's wick ratio. The Pine `rangeShock` flag uses an
+/// ATR-vs-recent-range comparison that the existing trap guard already
+/// folds into `trap.penalty` — we don't double-count it here.
+fn vol_shock_layer(snapshot: &IndicatorSnapshot<'_>) -> bool {
+    let z_shock = snapshot.volume.z_score.ready && snapshot.volume.z_score.value >= 3.0;
+    let total_range = snapshot.latest.high - snapshot.latest.low;
+    let body = (snapshot.latest.close - snapshot.latest.open).abs();
+    let wick_ratio = if total_range > 0.0 {
+        1.0 - (body / total_range).clamp(0.0, 1.0)
+    } else {
+        0.0
+    };
+    z_shock || wick_ratio >= 0.55
 }
 
 /// V1 Gold proxy bias soft layer. Returns true when the XAUUSD daily proxy
@@ -1288,212 +1663,6 @@ fn atr_news_layer(snapshot: &IndicatorSnapshot<'_>) -> bool {
     ratio > 0.0 && ratio < 0.02
 }
 
-/// V61.7 HTF bias check. Returns the configured profile weight when the
-/// preferred HTF (D1 → H4 → H1, whichever is available) agrees with the
-/// proposed direction. When no MTF data is configured (legacy single-timeframe
-/// symbols) or the chosen TF has no readable bias yet, the layer passes
-/// through so it does not penalize the score.
-fn htf_bias_layer(direction: SignalDirection, snapshot: &IndicatorSnapshot<'_>) -> bool {
-    if snapshot.mtf.is_empty() {
-        return true;
-    }
-    let summary = snapshot
-        .mtf
-        .get(&Timeframe::D1)
-        .or_else(|| snapshot.mtf.get(&Timeframe::H4))
-        .or_else(|| snapshot.mtf.get(&Timeframe::H1));
-    let Some(summary) = summary else {
-        return true;
-    };
-    match (direction, summary.bias) {
-        (SignalDirection::Long, SignalDirection::Long) => true,
-        (SignalDirection::Short, SignalDirection::Short) => true,
-        (_, SignalDirection::Wait) => true,
-        _ => false,
-    }
-}
-
-/// Companion to `htf_bias_layer` that checks the close-vs-EMA-200 alignment
-/// on the chosen HTF. Same pass-through fallback semantics.
-fn ema_htf_layer(direction: SignalDirection, snapshot: &IndicatorSnapshot<'_>) -> bool {
-    if snapshot.mtf.is_empty() {
-        return true;
-    }
-    let summary = snapshot
-        .mtf
-        .get(&Timeframe::D1)
-        .or_else(|| snapshot.mtf.get(&Timeframe::H4));
-    let Some(summary) = summary else {
-        return true;
-    };
-    match (direction, summary.ema_trend_above) {
-        (SignalDirection::Long, Some(true)) => true,
-        (SignalDirection::Short, Some(false)) => true,
-        (_, None) => true,
-        _ => false,
-    }
-}
-
-fn trend_layer(direction: SignalDirection, snapshot: &IndicatorSnapshot<'_>) -> bool {
-    let structure = matches!(
-        (direction, snapshot.structure.event),
-        (
-            SignalDirection::Long,
-            StructureEvent::BullishBos | StructureEvent::BullishChoch
-        ) | (
-            SignalDirection::Short,
-            StructureEvent::BearishBos | StructureEvent::BearishChoch
-        )
-    );
-    let ema = match direction {
-        SignalDirection::Long => {
-            (!snapshot.ema_fast.ready || snapshot.latest.close > snapshot.ema_fast.value)
-                && (!snapshot.ema_slow.ready || snapshot.latest.close > snapshot.ema_slow.value)
-                && (!snapshot.ema_trend.ready || snapshot.latest.close > snapshot.ema_trend.value)
-        }
-        SignalDirection::Short => {
-            (!snapshot.ema_fast.ready || snapshot.latest.close < snapshot.ema_fast.value)
-                && (!snapshot.ema_slow.ready || snapshot.latest.close < snapshot.ema_slow.value)
-                && (!snapshot.ema_trend.ready || snapshot.latest.close < snapshot.ema_trend.value)
-        }
-        SignalDirection::Wait => false,
-    };
-    structure && ema
-}
-
-fn momentum_layer(direction: SignalDirection, snapshot: &IndicatorSnapshot<'_>) -> bool {
-    let adx_active = snapshot.dmi.adx.ready && snapshot.dmi.adx.value > 16.0;
-    let dmi = match direction {
-        SignalDirection::Long => {
-            snapshot.dmi.di_plus.ready
-                && snapshot.dmi.di_minus.ready
-                && snapshot.dmi.di_plus.value > snapshot.dmi.di_minus.value
-        }
-        SignalDirection::Short => {
-            snapshot.dmi.di_plus.ready
-                && snapshot.dmi.di_minus.ready
-                && snapshot.dmi.di_minus.value > snapshot.dmi.di_plus.value
-        }
-        SignalDirection::Wait => false,
-    };
-    let rsi = match direction {
-        SignalDirection::Long => {
-            snapshot.rsi.ready && (50.0..=72.0).contains(&snapshot.rsi.value)
-        }
-        SignalDirection::Short => {
-            snapshot.rsi.ready && (28.0..=50.0).contains(&snapshot.rsi.value)
-        }
-        SignalDirection::Wait => false,
-    };
-    let macd = match direction {
-        SignalDirection::Long => {
-            snapshot.macd.macd.ready
-                && snapshot.macd.signal.ready
-                && snapshot.macd.histogram.ready
-                && snapshot.macd.macd.value > snapshot.macd.signal.value
-                && snapshot.macd.histogram.value > 0.0
-        }
-        SignalDirection::Short => {
-            snapshot.macd.macd.ready
-                && snapshot.macd.signal.ready
-                && snapshot.macd.histogram.ready
-                && snapshot.macd.macd.value < snapshot.macd.signal.value
-                && snapshot.macd.histogram.value < 0.0
-        }
-        SignalDirection::Wait => false,
-    };
-
-    adx_active && dmi && (rsi || macd)
-}
-
-fn volume_layer(direction: SignalDirection, snapshot: &IndicatorSnapshot<'_>) -> bool {
-    let flow = snapshot.volume.session_ratio.ready
-        && snapshot.volume.session_ratio.value >= 1.15
-        && !snapshot.volume.decaying;
-    let clv = match direction {
-        SignalDirection::Long => snapshot.shape.close_location_value > 0.0,
-        SignalDirection::Short => snapshot.shape.close_location_value < 0.0,
-        SignalDirection::Wait => false,
-    };
-    flow && clv
-}
-
-fn entry_layer(
-    direction: SignalDirection,
-    snapshot: &IndicatorSnapshot<'_>,
-    config: &AppConfig,
-) -> bool {
-    let atr_tolerance = snapshot.atr.value.max(0.0) * 0.08;
-    let sweep = detect_liquidity_sweep(
-        snapshot.candles,
-        20.min(snapshot.candles.len() - 1),
-        atr_tolerance,
-    );
-    let order_blocks = detect_order_blocks(
-        snapshot.candles,
-        20,
-        config.indicators.ob_displacement_atr,
-    );
-    let zones = detect_zones(
-        snapshot.candles,
-        30,
-        snapshot.atr.value.max(0.0) * config.indicators.sr_cluster_atr,
-        6,
-    );
-
-    let structure_entry = matches!(
-        (direction, snapshot.structure.event),
-        (
-            SignalDirection::Long,
-            StructureEvent::BullishBos | StructureEvent::BullishChoch
-        ) | (
-            SignalDirection::Short,
-            StructureEvent::BearishBos | StructureEvent::BearishChoch
-        )
-    );
-    let vwap_entry = match direction {
-        SignalDirection::Long => {
-            snapshot.vwap.ready && snapshot.latest.close >= snapshot.vwap.value
-        }
-        SignalDirection::Short => {
-            snapshot.vwap.ready && snapshot.latest.close <= snapshot.vwap.value
-        }
-        SignalDirection::Wait => false,
-    };
-    let sweep_entry = matches!(
-        (direction, sweep),
-        (SignalDirection::Long, Some(sweep)) if sweep.kind == SweepKind::Low && sweep.reclaimed
-    ) || matches!(
-        (direction, sweep),
-        (SignalDirection::Short, Some(sweep)) if sweep.kind == SweepKind::High && sweep.reclaimed
-    );
-    let order_block_entry = order_blocks.iter().any(|block| {
-        block.valid
-            && matches!(
-                (direction, block.kind),
-                (SignalDirection::Long, OrderBlockKind::Bullish)
-                    | (SignalDirection::Short, OrderBlockKind::Bearish)
-            )
-    });
-    let sr_entry = match direction {
-        SignalDirection::Long => zones.iter().any(|zone| zone.kind == ZoneKind::Support),
-        SignalDirection::Short => zones.iter().any(|zone| zone.kind == ZoneKind::Resistance),
-        SignalDirection::Wait => false,
-    };
-
-    structure_entry || (vwap_entry && (sweep_entry || order_block_entry || sr_entry))
-}
-
-fn anti_trap_layer(
-    direction: SignalDirection,
-    snapshot: &IndicatorSnapshot<'_>,
-    config: &AppConfig,
-) -> bool {
-    if snapshot.shape.trap_risk && snapshot.shape.body_ratio < 0.35 {
-        return false;
-    }
-    !evaluate_trap_guard(snapshot.candles, &config.trap_guard, direction).blocks_signal
-}
 
 fn last_ready(points: &[IndicatorPoint]) -> IndicatorPoint {
     points
@@ -1539,13 +1708,15 @@ fn build_plan_context(
         .then(|| snapshot.volume.z_score.value >= 3.0)
         .unwrap_or(false);
 
-    // Sub-phase 1.7.16 Gap C — per-asset EW compression. The evaluator owns
-    // the Pine `altEWFactor` formula; the entry plan applies it to the EW2 /
-    // EW3 / deep-add spacing. BTC / Forex / IDX default to 1.0; Gold and
-    // Altcoin override via `ew_compression_factor`.
+    // Sub-phase 1.7.16 Gaps C/G/H — per-asset EW / SL / TP factors. The
+    // evaluator owns the Pine `altEWFactor` / `altSLFactor` / `altTPFactor`
+    // formulas; downstream engines consume them via `PlanContext`. BTC /
+    // Forex / IDX default to 1.0; Gold and Altcoin override.
     let shock_active = state.is_frozen() || snapshot.regime == MarketRegime::Shock;
-    let alt_ew_factor =
-        crate::assets::evaluator_for(asset_class).ew_compression_factor(session, flow_state, shock_active);
+    let evaluator = crate::assets::evaluator_for(asset_class);
+    let alt_ew_factor = evaluator.ew_compression_factor(session, flow_state, shock_active);
+    let alt_sl_factor = evaluator.sl_extension_factor(session, flow_state, shock_active);
+    let alt_tp_factor = evaluator.tp_compression_factor(session, flow_state, shock_active);
     let is_daily = matches!(timeframe, Timeframe::D1);
 
     PlanContext {
@@ -1592,6 +1763,8 @@ fn build_plan_context(
         flow_trap_block,
         alt_ew_factor,
         is_daily,
+        alt_sl_factor,
+        alt_tp_factor,
     }
 }
 
@@ -1741,7 +1914,14 @@ mod tests {
         let candles = trending_candles(80, SignalDirection::Long);
         let signal = SignalGenerator::new(&config).evaluate("BTCUSDT", &candles);
 
-        assert_eq!(signal.state, SignalState::Long);
+        assert_eq!(
+            signal.state,
+            SignalState::Long,
+            "reason={} long={} short={}",
+            signal.reason,
+            signal.confidence.long,
+            signal.confidence.short
+        );
         assert!(signal.confidence.long >= config.strategy.min_confidence_1d);
         assert!(signal.entry_plan.is_some());
     }
@@ -1832,9 +2012,19 @@ mod tests {
         snapshot.dmi.di_plus = IndicatorPoint::ready(30.0);
         snapshot.dmi.di_minus = IndicatorPoint::ready(15.0);
 
+        // Sub-phase 1.7.17 — RSI and MACD are now independent sub-layers in
+        // the accumulator. RSI=80 is out of the 50..=72 long band → rsi
+        // sub-layer fails. MACD histogram is negative → macd sub-layer also
+        // fails for long. Either being a `false` here means the test's
+        // semantic ("overbought + bearish MACD doesn't earn momentum
+        // weight") still holds even though the macro layer is gone.
         assert!(
-            !momentum_layer(SignalDirection::Long, &snapshot),
-            "RSI=80 (overbought) + bearish MACD must fail strict momentum layer"
+            !rsi_sub_layer(SignalDirection::Long, &snapshot),
+            "RSI=80 (overbought) must fail the long RSI sub-layer"
+        );
+        assert!(
+            !macd_sub_layer(SignalDirection::Long, &snapshot),
+            "bearish MACD histogram must fail the long MACD sub-layer"
         );
     }
 
@@ -1852,8 +2042,20 @@ mod tests {
         snapshot.dmi.di_minus = IndicatorPoint::ready(15.0);
 
         assert!(
-            momentum_layer(SignalDirection::Long, &snapshot),
-            "RSI=60 (in 50..=72) + bullish MACD must pass strict momentum layer"
+            rsi_sub_layer(SignalDirection::Long, &snapshot),
+            "RSI=60 (in 50..=72) must pass the long RSI sub-layer"
+        );
+        assert!(
+            macd_sub_layer(SignalDirection::Long, &snapshot),
+            "bullish MACD histogram must pass the long MACD sub-layer"
+        );
+        assert!(
+            dmi_sub_layer(SignalDirection::Long, &snapshot),
+            "DI+ > DI- must pass the long DMI sub-layer"
+        );
+        assert!(
+            adx_band_layer(&snapshot),
+            "ADX=25 (in 16..=55) must pass the ADX band sub-layer"
         );
     }
 
@@ -1874,8 +2076,8 @@ mod tests {
         snapshot.dmi.di_minus = IndicatorPoint::ready(15.0);
 
         assert!(
-            !momentum_layer(SignalDirection::Long, &snapshot),
-            "negative MACD histogram must fail strict momentum layer even if macd>signal"
+            !macd_sub_layer(SignalDirection::Long, &snapshot),
+            "negative MACD histogram must fail the long MACD sub-layer even if macd>signal"
         );
     }
 
@@ -1893,8 +2095,8 @@ mod tests {
         snapshot.dmi.di_minus = IndicatorPoint::ready(30.0);
 
         assert!(
-            !momentum_layer(SignalDirection::Short, &snapshot),
-            "positive MACD histogram must fail short strict momentum layer"
+            !macd_sub_layer(SignalDirection::Short, &snapshot),
+            "positive MACD histogram must fail the short MACD sub-layer"
         );
     }
 

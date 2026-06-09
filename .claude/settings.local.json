@@ -38,7 +38,12 @@
       "Bash(awk NR>=870 && NR<=925 *)",
       "Bash(awk NR>=820 && NR<=900 *)",
       "Bash(grep -n \"                0.0,$\" /Users/mac/MasEDI/Playground/Trading_Bot/coinnesia-signal-bot/src/strategy/signals.rs)",
-      "Bash(RUST_TEST_THREADS=1 cargo test --lib)"
+      "Bash(RUST_TEST_THREADS=1 cargo test --lib)",
+      "Bash(awk NR>=225 && NR<=260 *)",
+      "Bash(awk 'NR>=691 && NR<=745' /Users/mac/MasEDI/Playground/Trading_Bot/coinnesia-signal-bot/docs/TV_Pine_Scripts/TV_GOLD_PAXG_XAUT_V1.pine.txt)",
+      "Bash(awk NR>=200 && NR<=260 *)",
+      "Bash(awk NR>=260 && NR<=320 *)",
+      "Bash(awk NR>=240 && NR<=330 *)"
     ]
   }
 }

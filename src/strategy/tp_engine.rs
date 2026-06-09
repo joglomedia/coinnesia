@@ -173,9 +173,12 @@ impl TakeProfits {
                 } else {
                     base + atr * config.tp3_atr
                 });
-                let raw1 = base + atr * config.tp1_atr * trend_factor * session_factor;
-                let raw2 = base + atr * config.tp2_atr * trend_factor * session_factor;
-                let raw3 = base + atr * config.tp3_atr * trend_factor * session_factor;
+                // Sub-phase 1.7.16 Gap H — apply `alt_tp_factor` per Pine
+                // line 881-883 (`longTPNRaw = base + atr * tpNATR *
+                // trendTPFactor * sessTPFactor * altTPFactor`).
+                let raw1 = base + atr * config.tp1_atr * trend_factor * session_factor * ctx.alt_tp_factor;
+                let raw2 = base + atr * config.tp2_atr * trend_factor * session_factor * ctx.alt_tp_factor;
+                let raw3 = base + atr * config.tp3_atr * trend_factor * session_factor * ctx.alt_tp_factor;
                 let pre1 = raw1.min(liq_cap.max(base + atr * step_min));
                 let tp1 = f_cap_long(
                     f_long_tp_fix(pre1, base, base, atr, step_min),
@@ -216,9 +219,14 @@ impl TakeProfits {
                 } else {
                     base - atr * config.tp3_atr
                 });
-                let raw1 = base - atr * config.tp1_atr * trend_factor * session_factor;
-                let raw2 = base - atr * config.tp2_atr * trend_factor * session_factor;
-                let raw3 = base - atr * config.tp3_atr * trend_factor * session_factor;
+                // Sub-phase 1.7.16 Gap H — apply `alt_tp_factor` to each raw
+                // distance per Pine line 884-886
+                // (`shortTPNRaw = base - atr * tpNATR * trendTPFactor *
+                //   sessTPFactor * altTPFactor`). Gold/Altcoin compress; BTC,
+                // Forex, IDX default to 1.0.
+                let raw1 = base - atr * config.tp1_atr * trend_factor * session_factor * ctx.alt_tp_factor;
+                let raw2 = base - atr * config.tp2_atr * trend_factor * session_factor * ctx.alt_tp_factor;
+                let raw3 = base - atr * config.tp3_atr * trend_factor * session_factor * ctx.alt_tp_factor;
                 let pre1 = raw1.max(liq_cap.min(base - atr * step_min));
                 let tp1 = f_cap_short(
                     f_short_tp_fix(pre1, base, base, atr, step_min),

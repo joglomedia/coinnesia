@@ -506,7 +506,7 @@ Acceptance:
 - `cargo test --test parity` passes against refreshed fixtures.
 - `cargo test --lib` still passes (156/156).
 
-### 1.7.16 Pine V1 Gold deep-audit gap report — Drafted 2026-06-05; commits 1 (A+B+E) & 2 (C) Done 2026-06-06
+### 1.7.16 Pine V1 Gold deep-audit gap report — Drafted 2026-06-05; commits 1 (A+B+E), 2 (C), and 3 (G+H) Done 2026-06-06
 
 Estimate: ~9 hours total across 4 commits. Status: **Drafted**. Discovered during the
 third OANDA:XAUUSD 1D diff session (2026-06-05) — the user re-ran
@@ -690,48 +690,47 @@ Files to investigate (in order):
 - `src/strategy/signals.rs` — verify `PanelInputs.extras.xauusd_bias` is set
   from the snapshot (not hard-coded to `Wait`).
 
-#### Gap G — SL formula possibly missing session/wick padding (MEDIUM)
+#### Gap G — SL formula possibly missing session/wick padding (MEDIUM). Done 2026-06-06.
 
-Pine lines 240-248:
-```pine
-shortStop = math.max(baseStop, math.max(structStop, deepStop))
-   where structStop = swingHigh + atr*slStructATR + sessPad + trapPad + wickPad + volPad
-         deepStop   = deepAdd + atr*(minSLDistanceATR + f_session_extra(sess))
-```
+Audit verdict: Pine's sess/trap/wick/vol pad stack **was** already wired
+in `StopLoss::from_context` correctly. The real cause of the SHORT-SL
+divergence (Pine 4.67 ATR vs Rust 2.0 ATR past close) was two
+*non-Pine* constraints added previously plus a missing `altSLFactor`
+multiplier:
 
-Pine SL = 4765, deep = 4570 → SL is ~3.5 ATR past deep.
-Rust SL = 4676, deep = 4565 → SL is ~2.0 ATR past deep.
+- **Fixed**: applied Pine `altSLFactor` to the absolute max-SL cap
+  (`close ± atr * maxSLDistanceATR * altSLFactor`, Pine lines 869-870).
+  New `AssetEvaluator::sl_extension_factor(session, flow, shock_active)`
+  trait method (default `1.0`), with Gold and Altcoin overrides per
+  Pine V1 line 402 (clamp `[1.0, 1.55]`) and V62 line 390 (clamp
+  `[1.0, 1.85]`). Plumbed through `PlanContext.alt_sl_factor` populated
+  by `build_plan_context`.
+- **Removed**: the `dyn_cap = ew1 ± atr * session_cap` clamp on `sl` —
+  Pine uses `maxSLDynamic` (line 1023) only for the "SL WIDE" too-wide
+  reject check, never to clamp the SL itself. The too-wide check stays.
+- **Removed**: the `sl.min(ew3 ± atr * 0.05)` clamp — not in Pine,
+  was tightening SL aggressively to within 0.05 ATR of EW3.
 
-Either the session/trap/wick/vol padding stack isn't fully replicated in
-`StopLoss::from_context`, or the structStop swingHigh source differs.
+Both removals match Pine's `f_long_sl`/`f_short_sl` exactly: the SL
+candidate is the max of base/struct/deep stops, then pushed out by the
+wick override, then capped only by `maxSLDistanceATR * altSLFactor`.
+Token-specific Pine signals (`altWickChaos`, `goldNewsShock`) remain
+proxied as `shock_active` and `flow == Low` — refinement under Gap F.
 
-Files to audit:
-- `src/strategy/sl_engine.rs::StopLoss::from_context` — side-by-side
-  against Pine `f_short_sl` / `f_long_sl`.
+#### Gap H — TP formula missing altTPFactor (LOW). Done 2026-06-06.
 
-#### Gap H — TP formula missing altTPFactor (LOW)
+Added `AssetEvaluator::tp_compression_factor(session, flow, shock_active)`
+trait method (default `1.0`) with Gold and Altcoin overrides per Pine
+V1 line 401 (clamp `[0.55, 1.08]`) and V62 line 389 (clamp `[0.38, 1.10]`).
+Plumbed through `PlanContext.alt_tp_factor`. Multiplied into the raw
+TP1/2/3 distances in `TakeProfits::from_context` for both LONG and SHORT
+branches — Pine `tpNRaw = base ± atr * tpNATR * trendTPFactor *
+sessTPFactor * altTPFactor` (Pine lines 881-886).
 
-Pine lines 881-886:
-```pine
-shortTP1Raw = shortTPBase - atr * tp1ATR * trendTPFactor * sessTPFactor * altTPFactor
-```
-
-Rust `tp_engine.rs:176-178, 219-221`:
-```rust
-let raw1 = base + atr * config.tp1_atr * trend_factor * session_factor;
-```
-
-Missing the `altTPFactor` (asset/Gold-specific compression). The
-`trendTPFactor` and `sessTPFactor` already match Pine. The TP base
-(`max(close, EW1)` for LONG, `min(close, EW1)` for SHORT) also matches.
-
-Files to change:
-- `src/strategy/plan_context.rs::PlanContext` — add `pub alt_tp_factor: f64`.
-- `src/assets/mod.rs::AssetEvaluator` — new method
-  `fn tp_compression_factor(&self, session, flow, shock) -> f64` with `1.0`
-  default and Gold/Altcoin overrides per Pine.
-- `src/strategy/tp_engine.rs::from_context` — multiply raw1/2/3 by
-  `ctx.alt_tp_factor`.
+BTC / Forex / IDX inherit the `1.0` defaults so their TP prices remain
+unchanged. Gold under USA + Mid + no-shock evaluates to `1.0` per Pine
+(no multiplier hits) — divergence only appears in chaotic / quiet
+sessions. Altcoin USA + Mid + no-shock also evaluates to `1.0`.
 
 #### Suggested commit sequencing
 
@@ -761,6 +760,607 @@ Acceptance for the full sub-phase:
 - `trap_gate_text` matches Pine on the captured trap fixture set.
 - `cargo test --test parity` and `cargo test --lib` both green after each
   commit.
+
+### 1.7.17 Score composition Pine parity — Done 2026-06-09 (Drafted 2026-06-08; all 4 commits landed in one session)
+
+Estimate: ~10-15 hours total across 4 commits. Status: **Drafted**. Surfaced
+during the OANDA:XAUUSD 1D verification session on 2026-06-08: after
+sub-phase 1.7.16 commits 1-3 (Gap A+B+E panel rendering, Gap C `altEWFactor`,
+Gap G+H SL/TP factors), Rust still reports `Bias : MAP SHORT 37%` against
+Pine's `Bias : MAP SHORT 100%`. The panel render is now correct (analog score,
+Pine wording); the underlying `confidence.short` weighted analog itself
+diverges because the Rust scorer collapses Pine's granular sub-layer
+accumulation into 8 macro hard layers + 6 soft layers, and the per-asset
+profile weight tables (`config/profiles.rs`) cap the maximum reachable score
+at 100 even before Pine's penalty stack would saturate.
+
+Pine source compared was
+`docs/TV_Pine_Scripts/TV_GOLD_PAXG_XAUT_V1.pine.txt` lines 675-745 (V1 Gold
+`longScore`/`shortScore` composition) plus the V61.6 micro-trend override
+(lines 711-714), V61.7 consensus weighting (lines 717-721), and V63 Gold
+direction adapter (lines 725-745).
+
+#### Audit — what Pine actually does
+
+Pine `shortScore` (line 691-745) accumulates 16+ weighted sub-layers. Each
+sub-layer is an `if condition then +N else 0` or `if condition then +N else -M`
+expression on a single named boolean, *not* a macro layer. The maximum
+attainable raw `shortScore` is **roughly 150** (sum of all positive paths
+including the micro-trend / consensus / Gold proxy contributions), which
+saturates the `clamp(_, 0, 100)` ceiling. Pine designed the score to
+saturate routinely on clean trend bars — that's why the Gold screenshot
+shows `100/100`.
+
+Full Pine accumulator (Gold V1, ported verbatim from script lines 691-745):
+
+| # | Pine signal | Sub-layer weight | Sign |
+|---|---|---|---|
+| 1 | `bias4h == "JUAL"` (else SIDEWAYS → +5) | +18 / +5 | + |
+| 2 | `bias1d == "JUAL"` (else SIDEWAYS → +4) | +14 / +4 | + |
+| 3 | `trendDown` (close < EMA20 < EMA50) | +14 | + |
+| 4 | `trend200ShortOK` (close < EMA200) | +10 | + |
+| 5 | `macdShortOK` (MACD histogram negative + signal cross) | +10 | + |
+| 6 | `rsiShortOK` (RSI in 30..55 range for short) | +10 | + |
+| 7 | `diMinus > diPlus` | +8 | + |
+| 8 | `adx ∈ [16, 55]` | +8 | + |
+| 9 | `vwapShortOK` (close < vwap) | +10 | + |
+| 10 | `mtfDominantBias == "JUAL"` (else SIDEWAYS → +4) | +12 / +4 | + |
+| 11 | `structureShortOK` (BoS or CHoCH bearish) | **+8 / −14** | both |
+| 12 | `smcShortBonus` (variable from SMC trend state) | +N | + |
+| 13 | `microBearOverride` (V61.6) | +14 | + |
+| 14 | `microBullOverride` (V61.6, opposite direction) | **−18** | − |
+| 15 | `consensusShortScore × 0.22` (V61.7) | +variable | + |
+| 16 | `consensusLongScore × 0.18` (V61.7, opposite) | **−variable** | − |
+| 17 | `goldProxyBear × goldProxyWeight` (V63, Gold) | +variable | + |
+| 18 | `goldProxyBull × goldProxyWeight` (V63, opposite) | **−variable** | − |
+| 19 | `altShortReversalOK` (V63 LTF reversal allowance) | +8 | + |
+| 20 | `(altChaos or altFakeImpulse) × altTrapPenalty` (V63) | **−variable** | − |
+| 21 | `macroConflictShort and altShortReversalOK × 8 × altHTFRelax` | +variable | + |
+| 22 | `useGoldProxyFilter and goldProxyBull and not altShortReversalOK` | **−8** | − |
+| 23 | `antiChop` penalty | **−12** | − |
+| 24 | `strongConflictShort` penalty | **−18** | − |
+| 25 | `macroConflictShort` penalty | **−10** | − |
+| 26 | `volShock` penalty | **−4** | − |
+
+Raw range pre-clamp: `[-94, +150]`. Pine then `clamp(score, 0, 100)`.
+
+#### Audit — what Rust currently does
+
+`src/strategy/signals.rs::evaluate_direction` (lines 1057-1172) collapses
+this into 8 macro hard layers + 6 soft layers and looks up a single weight
+per macro key from `config/profiles.rs`:
+
+| Rust macro layer | Pine sub-layers folded in | Gold profile weight |
+|---|---|---|
+| `trend` | structure (11) + EMA20/50/200 trend (3+4) | `structure=10` |
+| `htf_bias` | bias4h (1) + bias1d (2) | profile lacks `htf_bias` key → **0** |
+| `ema_htf` | close vs EMA-200 HTF | `ema_htf=15` |
+| `momentum` | MACD (5) + RSI (6) + DI (7) + ADX band (8) | `momentum=6` |
+| `volume` | (Pine has no single corresponding pass-through) | `token_volume=5` |
+| `entry` | liquidity sweep + VWAP-side check (9) | `liquidity=8` + `vwap=12` |
+| `anti_trap` | wick/range checks | (no Pine equivalent in score) |
+| `regime_session` | session active for asset class (10 fold-in proxy) | `session=14` |
+| `xauusd_proxy` (soft) | goldProxyBear (17) | `xauusd_proxy=20` |
+| `cmf_obv` / `ihsg_benchmark` / `rvol_value_gate` / `downside_risk` / `atr_news` (soft) | other-asset signals | varied |
+
+Gold profile weight table maxes at exactly 100:
+`xauusd_proxy=20, ema_htf=15, session=14, vwap=12, atr_news=10,
+structure=10, liquidity=8, momentum=6, token_volume=5 → sum = 100`.
+
+The penalty stack from Pine items 14, 16, 18, 20, 22, 23, 24, 25, 26
+(potential `−94`) is **entirely absent** from the Rust scorer. `evaluate_direction`
+only subtracts `trap.penalty` (line 1161) at the end. Pine also has
+**failure penalties** built into specific layers (item 11: `structureShortOK`
+gives `+8` on pass but `−14` on fail) — Rust's `add_layer` simply skips on
+fail, never subtracts.
+
+The micro-trend override (items 13/14) and consensus weighting (items 15/16)
+have **no Rust equivalent at all**. The Gold V63 direction adapter (items
+17-22) is also absent.
+
+#### Why this produces the observed `37%` vs `100%`
+
+On the user's OANDA:XAUUSD 1D bar:
+- Rust attainable max: 100 (profile ceiling).
+- Rust observed: 37 → indicates roughly 4 of 9 weighted Gold layers fired.
+- Pine attainable max: 150 (saturates clamp).
+- Pine observed: 100 (saturated clamp) → indicates at least 16 of 26 Pine
+  sub-layers fired, possibly with positive contributions overflowing the
+  clamp by 20-50 raw points.
+
+Even if Rust fired *every* macro layer it would only reach 100 — but the
+profile-key macro mapping means many Pine sub-layers contribute nothing
+(e.g. there's no `bias4h`/`bias1d` weight at all because `htf_bias` isn't
+in the Gold profile table). And there's no penalty path, so Rust can't
+distinguish a clean trend from a chop-on-conflict bar the way Pine does
+through `antiChop`, `strongConflict`, `macroConflict`, `volShock`.
+
+#### Implementation result (Done 2026-06-09)
+
+Commit 1 — Sub-layer accumulator skeleton.
+- `src/config/profiles.rs` rewritten with `WeightPair { pass, fail }`
+  shape and `AssetProfile::weight()` lookup helper.
+- All 5 asset profiles migrated to per-sub-layer keys: BTC has 17, Altcoin
+  17, Gold 18, Forex 16, IDX 20.
+- `src/strategy/signals.rs::evaluate_direction` replaced with an `add`
+  closure that consults the profile and applies pass / fail weights
+  per Pine V1 line 701 (`structureShortOK ? +8 : -14` is the canonical
+  fail-weight example).
+- 17 new sub-layer helpers ported: `bias_htf_4h_layer`, `bias_htf_1d_layer`,
+  `trend_dir_layer`, `trend_200_layer`, `macd_sub_layer`, `rsi_sub_layer`,
+  `dmi_sub_layer`, `adx_band_layer`, `vwap_sub_layer`, `mtf_dominant_layer`,
+  `structure_sub_layer`, `smc_bonus_layer`, `ltf_consensus_layer`,
+  `liquidity_sub_layer`, `support_resistance_sub_layer`, `volume_sub_layer`,
+  `anti_trap_sub_layer`.
+- Old macro helpers removed: `trend_layer`, `momentum_layer`, `volume_layer`,
+  `entry_layer`, `anti_trap_layer`, `htf_bias_layer`, `ema_htf_layer`.
+- `passes` semantics restored to Pine `longDirectionOK` / `shortDirectionOK`
+  shape (`structure_ok && trend_dir && anti_trap && session`).
+- 4 inline tests updated to use the new sub-layer helpers
+  (`rsi_sub_layer` / `macd_sub_layer` / `dmi_sub_layer` / `adx_band_layer`).
+
+Commit 2 — Penalty stack.
+- New helpers `anti_chop_layer`, `strong_conflict_layer`,
+  `macro_conflict_layer`, `vol_shock_layer` in `signals.rs`.
+- Each profile gained four negative-pass-weight entries:
+  `anti_chop = -12`, `strong_conflict = -18`, `macro_conflict = -10`,
+  `vol_shock = -4` (Pine V1 lines 723-726 numerics, mirror for BTC V61.9
+  lines 624-627). All 5 asset profiles get the same magnitudes per Pine.
+- `strong_conflict` and `macro_conflict` are direction-specific (the long
+  penalty fires only when the opposing-side conditions are present);
+  the helpers take `direction` and apply asymmetrically.
+
+Commit 3 — V61.6 micro-trend override + V61.7 consensus weighting.
+- Direction-symmetric *graded* contributions applied directly to the
+  accumulator (not via the boolean `add` closure).
+- Micro-trend: `+14` matching, `-18` opposing (Pine BTC V61.9 lines
+  648-651). Source = `snapshot.micro_trend`.
+- Consensus weighting: `+0.22 × consensus_same_dir_score - 0.18 ×
+  consensus_opposite_dir_score`. Source = `snapshot.consensus` already
+  computed upstream.
+- Universal across all 5 asset classes (Pine constants, no per-asset
+  overrides needed).
+
+Commit 4 — V63 Gold direction adapter (+ V62 Altcoin analog).
+- New `AssetEvaluator::score_adjustments(direction, snapshot) -> f64`
+  trait method with `0.0` default for BTC / Forex / IDX.
+- Gold override (Pine V1 lines 731-745): LTF-edge weighting (`consensus ×
+  0.07 × altLTFWeight` where `altLTFWeight = 0.88`), proxy directional
+  weight (`±goldProxyWeight = 9.0`), reversal-OK +8, macro-conflict
+  relax (`+8 × 0.18 altHTFRelax`), opposing-proxy −8 penalty.
+- Altcoin override (Pine V62 lines 708-718): same shape but
+  `altLTFWeight = 1.25`, 0.10/0.08 multiplier pair, +10 reversal-OK,
+  no proxy contribution.
+- Token-specific Pine signals (`altClean`, `altChaos`,
+  `altFakeImpulse`, `liqBullReclaim`) approximated by M15+H1 MTF
+  alignment proxies — full token-decomposition refinement still
+  tracked under sub-phase 1.7.16 Gap F.
+
+Verification:
+- `cargo build` clean after each commit.
+- `cargo test --test parity` 5/5 pass with refreshed fixtures after each commit.
+- `cargo test --lib` 167/167 pass after each commit (no regressions; one
+  pre-existing flaky supervisor test still passes under
+  `RUST_TEST_THREADS=1`).
+- BTC fixture `bias_text` migrated from `Bias : MAP LONG 75%` (commit 0 vote-
+  ratio) → `15%` (commit 0 weighted analog after Gap A revert) → `29%`
+  (commit 1 sub-layer skeleton) → `39%` (commits 2+3+4 with penalty stack
+  + micro-trend + consensus + V63 adapter applied).
+
+#### Original suggested commit sequencing
+
+**Commit 1 — Sub-layer accumulator skeleton (~3-4h).** Replace
+`evaluate_direction`'s macro-layer fold with a per-sub-layer accumulator
+struct (e.g. `ScoreBreakdown` with one field per Pine line). Port all 26
+Pine sub-layers as boolean predicates against `IndicatorSnapshot`. Keep the
+profile weight table for now but make each profile key a *sub-layer* name
+(e.g. `bias_htf_4h`, `bias_htf_1d`, `trend_down`, `trend200`, `macd`,
+`rsi`, `dmi`, `adx_band`, `vwap`, `mtf_dominant`, `structure_ok`,
+`smc_bonus`, ...). Add the failure-penalty path: `add_layer` becomes
+`add_layer(name, pass_weight, fail_weight)`. Migrate the Gold profile
+table to the new sub-layer keys (~15-20 entries instead of 9 macro keys);
+the other 4 asset profiles get default tables too. Land with refreshed
+parity fixtures.
+
+**Commit 2 — Penalty stack + Pine `antiChop` / `strongConflict` /
+`macroConflict` / `volShock` (~2-3h).** Add four new pass-through helpers
+that return `bool` plus a per-direction penalty weight. Wire them into the
+accumulator as negative contributions. `antiChop` reuses the existing
+sideways regime classifier; `strongConflict` derives from M15 breakout/down
+vs H1 pressure; `macroConflict` derives from `bias1w` and `bias1m` MTF
+summaries; `volShock` derives from existing `IndicatorSnapshot.volume.z_score`.
+
+**Commit 3 — Micro-trend override (V61.6) + Consensus weighting (V61.7)
+(~3-4h).** Add `microBullOverride` / `microBearOverride` helpers driven by
+M1+M5 MTF state (current state already lives in `snapshot.mtf`). Add
+`consensusLongScore` / `consensusShortScore` derived from M1+M5+M15
+unanimity (already partially used by the Altcoin extra_gate). Apply
+`+14 / -18` micro-trend contribution and `× 0.22 / × 0.18` consensus
+contribution. These are direction-symmetric pairs — the *opposite*
+direction's contribution is subtracted.
+
+**Commit 4 — Gold V63 direction adapter (items 17-22) (~2-3h).** Add
+`AssetEvaluator::score_adjustments` returning a per-direction
+`Vec<(reason, weight)>` for asset-specific contributions. Gold returns
+`goldProxyBear × goldProxyWeight` (positive for matching direction,
+negative for opposite), `altShortReversalOK +8`, `altChaos / altFakeImpulse
+−altTrapPenalty`, and the `useGoldProxyFilter` opposing-bias penalty.
+Altcoin V62 (and any future class with a direction adapter) follows the
+same pattern.
+
+#### Acceptance criteria
+
+- `cargo run -- export-panel OANDA:XAUUSD 1D` produces a `confidence.short`
+  value within ±10 percentage points of Pine on the captured 2026-06-07
+  EROPA bar (Pine 100, expected Rust ≥ 90 once all 4 commits land).
+- `cargo run -- export-panel <BTC-symbol> 1D` reports an analog score
+  that no longer caps trivially at 100 on every clean trend bar (i.e. the
+  Pine penalty stack actively pulls the score off the ceiling for
+  conflict bars).
+- All 5 `tests/fixtures/parity/*.panel.json` snapshots refresh cleanly per
+  commit and survive replay (text comparison).
+- `cargo test --lib` stays green after each commit. Expect 10-20 score
+  threshold adjustments across `signals.rs::tests` because the score
+  values change everywhere. `cargo test --test parity` similarly.
+- `config/profiles.rs` migrated from 9 macro keys per asset to ~25
+  sub-layer keys per asset. Document the per-asset weight tables in a
+  comment block at the top of `profiles.rs` so the Pine V1/V62/V58/V5/BTC
+  line numbers stay traceable.
+
+#### Risk
+
+Largest blast radius in Phase 1.7 so far. `evaluate_direction` is the
+hottest function in the scan loop and its signature is depended on by
+every asset evaluator plus the parity test harness. Migration must be
+done in 4 ordered commits with parity fixtures refreshed and `cargo test`
+green between each — never in one mega-commit.
+
+The score values change for **every** symbol, not just Gold, so the
+existing supervisor / scanner / alert / API tests that hard-code
+"confidence > 50" or "trade_score >= 70" will need adjusting. Plan for
+a triage pass after Commit 1 lands.
+
+### 1.7.18 Per-asset-class Pine-parity rewrite — Drafted 2026-06-09
+
+Sub-phases 1.7.16 + 1.7.17 closed every Pine V1 Gold gap surfaced by the
+OANDA:XAUUSD deep-audit (BIAS/CONF analog, RECLAIM source, `altEWFactor`,
+SL/TP factors, sub-layer accumulator, penalty stack, V61.6 micro-trend
+override, V61.7 consensus weighting, V63 Gold direction adapter). The
+shared scaffolding (`AssetEvaluator` trait, `WeightPair` profile table,
+sub-layer helpers, `PlanContext` factor fields) now needs equivalent
+per-asset wiring for **Altcoin V62**, **BTC V61.9**, **Forex V58**, and
+**IDX V5**. `StocksUs` currently delegates to `StocksIdxEvaluator`
+(`src/assets/mod.rs:137`); that delegation should be split into its own
+evaluator once the IDX one is fully ported (commit 4 below).
+
+Each asset commit follows the same template the Gold work followed:
+
+1. **Panel/render audit** — capture `cargo run -- export-panel <symbol> <tf>`
+   output and diff every field against a Pine reference screenshot. File
+   the per-field gaps as `Gap A..H` in the same shape as 1.7.16.
+2. **Profile sub-layer table calibration** — rebalance the asset's
+   `config/profiles.rs` entry so the most-fire layers (always-present
+   sub-layers like `trend_dir`, `vwap`, `structure`, `volume`,
+   `anti_trap`, `session`) carry enough weight to clear the
+   `min_confidence_*` threshold on a clean trend bar, while letting the
+   MTF/penalty stack still pull the score around as Pine does.
+3. **`AssetEvaluator` overrides** — implement (or refine) the four
+   Pine-source-mapped trait methods:
+   - `ew_compression_factor` → Pine `altEWFactor`
+   - `sl_extension_factor` → Pine `altSLFactor`
+   - `tp_compression_factor` → Pine `altTPFactor`
+   - `score_adjustments` → Pine V63 direction adapter block
+4. **Fixture refresh + regression** — `UPDATE_PARITY_FIXTURES=1 cargo
+   test --test parity` + `cargo test --lib` after each commit. Threshold
+   tweaks in `tests/parity/*.rs` are allowed when Pine matches the new
+   numbers; do not lower a threshold just to make a test pass.
+
+#### Per-asset commit plans
+
+The sub-phases below are independent (each asset can land in isolation)
+but share the diff-then-fix workflow. Total scope estimate: **~30-40
+hours** across the 4 assets, dominated by the per-asset Pine
+read-and-verify pass (~3-4h per asset) and the trait override
+implementation (~3-5h per asset).
+
+##### 1.7.18.A — Altcoin V62 rewrite (~6-8h, blast radius: high)
+
+Pine source: `docs/TV_Pine_Scripts/TV_ALTCOIN_V62_0.pine.txt` (1498 lines).
+The V62 numerics already partially landed in commits 4 of 1.7.16+1.7.17
+(Altcoin overrides of `ew_compression_factor`, `sl_extension_factor`,
+`tp_compression_factor`, `score_adjustments`). The remaining V62-specific
+work centres on the `altProfile` resolution and token-class signals that
+Pine V62 uses but the Rust port currently elides.
+
+**Commit A1 — Altcoin OANDA-style diff capture and gap report.** Pick
+2-3 reference candidates (e.g. SOLUSDT, AVAXUSDT, MEMECOINUSDT) that
+exercise the Pine `altProfileResolved == "BTC/MAJOR" | "MAJOR ALT" |
+"MID ALT" | "MEME"` ladder. Capture Pine reference screenshots from
+TradingView. Run `cargo run -- export-panel <symbol> 1D` against the
+same closed bar. Diff every panel row, file Gaps A..H as in 1.7.16.
+
+**Commit A2 — `altProfileMult` token resolution (~2h).** Pine V62
+line 381: `altProfileMult = altProfileResolved == "BTC/MAJOR" ? 0.70 :
+"MAJOR ALT" ? 1.00 : "MID ALT" ? 1.25 : 1.50`. Pine resolves this from
+a per-symbol input. Rust currently has no `altProfile` config knob — add
+one to `config/default.toml` as
+`[[symbols]]` per-entry override with sensible default (`MAJOR ALT`).
+Plumb through `SymbolConfig` → `IndicatorSnapshot` → `AssetEvaluator`
+overrides. Pin token-class influence to the trait factor methods only;
+don't bleed into the additive scorer to keep the accumulator
+universal across asset classes.
+
+**Commit A3 — Pine V62 `altClean`/`altChaos`/`altFakeImpulse` signals
+(~2h).** These are token-specific candle quality detectors used by
+`altShortReversalOK`, `altTrapPenalty`, and the SL `altSLFactor`
+wick-buffer branch. Add new helpers in `src/strategy/signals.rs` keyed
+off the existing `IndicatorSnapshot.shape.body_ratio`, `clv`, `wick_ratio`,
+`volume.session_ratio`, and the new `altProfileMult`. Wire into Altcoin's
+`score_adjustments` to refine the LTF-edge weighting trigger.
+
+**Commit A4 — `altMaxChaseATR` no-chase TP gate (~1h).** Pine V62 line
+161 caps how far past TP1 the strategy is willing to "chase" before
+abstaining. Add `alt_max_chase_atr` to `EntryPlanConfig` (default 0.16
+ATR per Pine), surface in `PlanContext`, and reject in
+`TakeProfits::from_context` when `tp1 - close > atr * alt_max_chase_atr`.
+
+**Acceptance for 1.7.18.A:**
+- Altcoin panel rendering matches Pine reference within ±5pp BIAS/CONF on
+  the captured 2-3 reference bars.
+- `altProfileMult` resolution is per-symbol-configurable.
+- `altClean`/`altChaos` detection has unit-test coverage in
+  `assets::altcoin::tests`.
+- All 5 parity fixtures refresh cleanly; `cargo test --lib` 167/167
+  remains green.
+
+##### 1.7.18.B — BTC V61.9 rewrite (~5-7h, blast radius: medium)
+
+Pine source: `docs/TV_Pine_Scripts/TV_BTC_V61_9_FLOW_INTERPRETATION_PANEL_FULL.pine.txt`
+(1429 lines). BTC is the cleanest port because Pine V61.9 has no
+`altEWFactor`/`altTPFactor`/`altSLFactor` (those are V63 Gold / V62
+Altcoin additions). The BTC accumulator is the **reference** for the
+sub-layer skeleton already landed in 1.7.17. The remaining work is
+panel-level validation and the V61.6/V61.7 protective stack that lives
+in `failReason` but doesn't yet drive the Rust panel.
+
+**Commit B1 — BTC OANDA-style diff capture.** Use BTCUSDT 1D as the
+reference symbol (Pine V61.9 is the original BTC script). Capture Pine
+panel screenshot, run `cargo run -- export-panel BTCUSDT 1D`, diff every
+row. Expect minimal divergence here — the BTC accumulator is already
+the closest Rust impl to Pine.
+
+**Commit B2 — `failReason` Pine reason-text port (~3h).** Pine V61.9
+line 1028 builds a long disjunctive expression that surfaces the *first*
+gating failure to the panel: `flowTrapBlock ? "LOW FLOW WICK TRAP" :
+isTrap or cooldownTrap ? "TRAP" : shockActive ? "SHOCK FREEZE" :
+planLong and longKill ? "LONG KILL" : ...`. Currently Rust uses
+`PanelReport::reason` for free-form telemetry but doesn't follow Pine's
+priority ladder. Add a `pine_fail_reason()` helper that mirrors the
+Pine expression ordering byte-for-byte, threaded through `PanelInputs`
+so the panel renders `reason_text` (new field) alongside `trap_gate_text`.
+
+**Commit B3 — V61.6 `longKill`/`shortKill` deep-add reclaim gate (~2h).**
+Pine V61.9 lines 999-1004 introduce `longKill` (true when EW3 broke
+and deep-add reclaim window expired) and `shortKill` (mirror). This is
+already tracked in Rust as `GuardState.deep_reclaim_bars` but isn't
+gating emission. Wire `state.deep_reclaim_active && !reclaimed` into
+the emission gate in `evaluate_inner`. Currently the panel shows
+`DEEP RECLAIM` cosmetically without blocking — the Pine behaviour is
+to hard-block until the reclaim window resets.
+
+**Commit B4 — V61.7 `consensusOK` panel surface (~1h).** Pine
+`consensusLongOK = not useConsensusDirection or consensusEdge >=
+consensusScoreGap`. Rust already computes `consensus.blocks(...)` and
+short-circuits emission but the panel doesn't show the actual edge.
+Add `consensus_edge` and `consensus_gap_threshold` to `PanelReport`
+so the Telegram/HTML render can show `CONSENSUS: long=+18 vs gap=15`.
+
+**Acceptance for 1.7.18.B:**
+- `cargo run -- export-panel BTCUSDT 1D` BIAS/CONF matches Pine within
+  ±3pp (BTC has the smallest divergence pre-1.7.18 because the V61.9
+  accumulator is already faithfully ported).
+- `failReason` text matches Pine's priority ladder on the captured bar.
+- Deep-add reclaim hard-blocks emission (verified by a deterministic
+  fixture test that breaks EW3 then attempts re-entry mid-reclaim-window).
+- Consensus edge surfaces in the panel.
+
+##### 1.7.18.C — Forex V58 rewrite (~4-6h, blast radius: low)
+
+Pine source: `docs/TV_Pine_Scripts/TV_FOREX_V58_TOTAL_PRO.pine.txt`
+(442 lines). Forex is the simplest of the four because V58 has no
+`altProfile`/proxy/MTF-LTF-edge complications — it's a session-aware
+HTF-bias-driven engine. The score range is *also* `[0, 100]`-clamped
+but the composition is different from Gold/BTC.
+
+**Commit C1 — Forex diff capture.** Use `EURUSD` and `GBPUSD` 1H as
+reference candidates. Capture Pine reference panel from TradingView's
+Forex chart. Run `cargo run -- export-panel EURUSD 1H`, diff every row.
+
+**Commit C2 — Port Forex V58 `longScoreRaw`/`shortScoreRaw` (~2h).**
+Pine V58 lines 268-289 use a different sub-layer set than V1 Gold /
+V61.9 BTC:
+- `trendLong` (4-EMA stack: fast > mid > trend), weight 22 — heavier than Gold
+- `close > emaTrend` separate weight 8
+- `momentumLong` (RSI > 52 AND macdHist > 0 AND macdLine > macdSig), weight 16
+- `dmiLong + trendOK` (combined gate), weight 14
+- `structureLong` (BoS OR CHoCH OR sweep OR close>refHigh), weight 14
+- `pullbackLong OR entryMode == "BREAKOUT"`, weight 8
+- `liquidityLong` (sweep OR equalLow), weight 6
+- `htfRatio = round(12 * htfLongScore / htfMaxScore)` if present, else 6
+- `sessionOK`, weight 6
+- `volOK`, weight 4
+
+The Rust Forex profile (`config/profiles.rs:159-181` post-1.7.17)
+already has analogous keys but the **weights need recalibration** to
+match Pine V58 exactly. Bump `trend_dir` to 22, add a separate
+`trend_close_vs_ema200` key at 8, etc.
+
+**Commit C3 — V58 `htfBlockLong`/`htfBlockShort` hard gate (~1h).**
+Pine V58 lines 248-249: `htfBlockLong = blockCounterHTF && htfMaxScore
+> 0 && htfShortScore == htfMaxScore`. This is a direction-flip kill
+gate that's currently approximated as a `confidence` penalty but
+should be a hard `passes = false` for the Forex evaluator. Implement
+in `forex::ForexEvaluator::extra_gate` returning
+`Some("forex_htf_counter_block:long")` per Pine.
+
+**Commit C4 — V58 penalty stack (~2h).** Pine V58 lines 291-294:
+```pine
+penalty = 0
+penalty += chop ? 12 : 0
+penalty += atrTooHigh ? 10 : 0
+penalty += inRollover and avoidRollover ? 15 : 0
+penalty += adx > maxADX ? 8 : 0
+```
+The Forex penalty stack differs from the universal `anti_chop / strong_conflict
+/ macro_conflict / vol_shock` set added in 1.7.17. Add Forex-specific
+keys to the profile: `rollover_avoid` (-15), `atr_too_high` (-10),
+`adx_overheated` (-8). Implement helpers in `signals.rs` driven by
+existing `MarketSession::RolloverAvoid` plus a new
+`atr_pct_too_high_layer` (compares ATR/close ratio against
+`config.indicators.max_atr_pct`).
+
+**Acceptance for 1.7.18.C:**
+- `cargo run -- export-panel EURUSD 1H` BIAS/CONF matches Pine within
+  ±3pp. Forex Pine V58 is deterministic so the gap should close
+  cleanly once the four commits land.
+- Forex `htf_block` flag in `PanelAssetExtras.htf_block_long/short`
+  (already exists since 1.7.10) now reflects the Pine hard-block exactly.
+
+##### 1.7.18.D — IDX V5 rewrite + StocksUs split (~7-9h, blast radius: medium-high)
+
+Pine source: `docs/TV_Pine_Scripts/TV_IDX_PRO_5_SAHAM_INDONESIA.pine.txt`
+(425 lines). IDX V5 has the most Indonesia-specific signals (IHSG
+benchmark, RVOL value-traded gate, manual sentiment knobs, halal screen
+considerations). The current Rust port (`src/assets/stocks_idx.rs`)
+covers ~60% of these via the soft-layer set. Pine V5 also has a
+`downScore` separate from the bull `score` that surfaces a downside-risk
+penalty — Rust currently uses `downside_risk_layer` as a single boolean.
+
+**Commit D1 — IDX diff capture.** Pick 2-3 reference IDX symbols across
+caps (e.g. BBCA, BBNI, ADRO). Pine V5 reads tick-by-tick IHSG; the Rust
+port reads daily IHSG closes from TradingView proxy. Capture Pine + Rust
+panels and diff. Expect bigger gaps here than other assets because the
+manual sentiment knobs (`manualBigBuy`, `manualRetailSell`,
+`manualSpreadPips` proxy concepts) aren't fully wired through
+`PanelAssetExtras`.
+
+**Commit D2 — IDX V5 `downScore` separate panel surface (~2h).** Pine
+V5 lines 270-289 build `downScore` (range 0..100) from 13 sub-layers
+focused on the bearish risk. Currently Rust folds this into one
+`downside_risk_layer` boolean. Add `down_score: u32` and
+`down_risk_high: bool` to `PanelAssetExtras` so the IDX panel can show
+a separate "Downside Risk: 65/100 HIGH" row alongside the bull score.
+Hard-gate emission when `down_score >= downRiskLimit` (default 65 per
+Pine V5 line 33).
+
+**Commit D3 — IDX V5 score keys rebalance (~2h).** Pine V5 lines 295-317
+list 16 positive contributions + 7 penalties. The Rust IDX profile
+(post-1.7.17, `config/profiles.rs:202-228`) lists 20 entries but
+several mis-mapped:
+- `accumulationOK` (Pine: `cmf > 0 && obvSlope > 0 && close >= open`)
+  doesn't fully map to Rust's `cmf_obv` layer.
+- `breakoutRetestOK` has no Rust equivalent.
+- `chaseTooHigh` (`tp1 - close > atr * 0.30`) has no Rust equivalent.
+- `manualBigBuy` / `manualRetailSell` need config knobs.
+
+Rebalance the profile entries to align with Pine V5 numerics and add
+the missing helpers in `signals.rs`. Manual sentiment knobs become
+per-symbol config overrides exposed through `PanelAssetExtras`.
+
+**Commit D4 — Split `StocksUs` evaluator (~2h).** Pine V5 is Indonesia-
+specific (IHSG benchmark + Indonesian session windows). `StocksUs`
+currently delegates to `StocksIdxEvaluator` which is broken on US
+symbols (wrong benchmark, wrong sessions). Create `src/assets/stocks_us.rs`
+with a `StocksUsEvaluator` cloned from `StocksIdxEvaluator` but using
+SPY/QQQ as the benchmark and US market sessions
+(`MarketSession::Usa`). Wire into `assets::evaluator_for`.
+
+Add a `StocksUs` profile entry in `config/profiles.rs` with weights
+calibrated for US tech mega-caps (heavier `bias_htf_1d`, lighter
+`session` since US stocks trade in a single time zone). Acceptance:
+running `cargo run -- export-panel AAPL 1D` no longer fails the
+IHSG-benchmark gate.
+
+**Commit D5 — IDX V5 `support`/`resistance` SR-band port (~2h).**
+Pine V5 line 165: `resistance = ta.highest(high, srLen)` and
+`support = ta.lowest(low, srLen)`. The TP engine uses these as hard
+caps. Rust currently has `detect_zones` returning generic
+`ZoneKind::Support/Resistance` zones but doesn't use them as TP caps
+in the IDX-specific path. Surface IDX-specific zones to
+`PlanContext.idx_resistance` and let the IDX evaluator's
+`tp_compression_factor` apply the cap.
+
+**Acceptance for 1.7.18.D:**
+- `cargo run -- export-panel BBCA 1D` BIAS/CONF + `Downside Risk` panel
+  row matches Pine V5 within ±5pp.
+- `StocksUs` symbols no longer route through IDX-specific gates
+  (verified by a `cargo run -- export-panel AAPL 1D` that emits a
+  US-stocks-appropriate panel — no IHSG benchmark, USA session, etc.).
+- Pine V5 manual sentiment knobs map to per-symbol config overrides.
+
+#### Cross-asset cleanup commits (~3-5h, after 1.7.18.A-D land)
+
+**Commit X1 — Per-asset `score_adjustments` unit tests (~2h).** The 4
+sub-phases above each touch the trait method but the test coverage is
+thin. Add `tests/strategy/asset_score_adjustments.rs` with deterministic
+snapshot fixtures for each asset+direction pair, asserting the
+expected score-adjustment delta. Uses `IndicatorSnapshot::neutral()`
+plus per-test field mutation to isolate which Pine clause fires.
+
+**Commit X2 — Per-asset weight-table audit doc (~1h).** Add
+`docs/asset_profiles.md` that lists each asset's profile sub-layer
+table with the Pine line citation and weight rationale. Keeps the
+weight tuning auditable when Pine releases V64 / V63.x updates.
+
+**Commit X3 — Refresh `docs/executive_summary.md` and
+`docs/architecture_audit.md` (~1h).** Note the per-asset evaluator
+status (Gold ✅, Altcoin ✅+pending refinement, BTC ✅, Forex ✅,
+IDX ✅+US-split, StocksUs ✅). Update the "Strategy" row of the exec
+summary to reflect all 5+1 asset classes are Pine-parity-aligned.
+
+#### Acceptance for the full 1.7.18 sub-phase
+
+- All 5 evaluators have non-default overrides of
+  `ew_compression_factor`, `sl_extension_factor`, `tp_compression_factor`,
+  `score_adjustments` matching their respective Pine source.
+- `cargo run -- export-panel <symbol> <tf>` produces a panel whose
+  BIAS/CONF percentages are within ±5pp of the Pine reference for at
+  least 2 captured bars per asset class.
+- `cargo test --test parity` 5/5 (or 6/6 if a `stocks_us` suite is
+  added) pass with refreshed fixtures after each commit.
+- `cargo test --lib` stays green (no regression in the 167-test count;
+  expect 10-30 *new* asset-evaluator tests added per the X1 cleanup
+  commit).
+- `docs/asset_profiles.md` exists and lists each Pine V1/V62/V58/V61.9/V5
+  source line per profile entry.
+
+#### Risk and sequencing
+
+- **Independence:** the four asset commits (A/B/C/D) can land in any
+  order or even in parallel. Each touches its own `src/assets/<class>.rs`
+  + its own `config/profiles.rs` entry. The shared scaffolding
+  (`AssetEvaluator` trait, sub-layer helpers) does not need further
+  rewrites.
+- **Highest-impact first:** if asked to sequence, recommend
+  **1.7.18.A (Altcoin)** first — it has the largest user-visible
+  divergence on liquid crypto pairs (SOL, AVAX, etc.) where token-class
+  signals dominate. Then **1.7.18.D (IDX + US split)** because the
+  StocksUs delegation is currently broken. Then **1.7.18.C (Forex)**
+  which is small and fast. Then **1.7.18.B (BTC)** which is the smallest
+  divergence (V61.9 is already faithfully ported in 1.7.17).
+- **Test threshold drift:** as in 1.7.17, expect to revisit the inline
+  threshold checks in `src/strategy/signals.rs::tests` for the
+  `generates_*_signal_when_all_six_layers_pass` and
+  `same_candles_produce_asset_specific_scores` cases. Each asset commit
+  may shift `confidence` numerics by 5-15pp.
+- **Pine ground-truth dependency:** every commit's acceptance requires
+  a Pine reference screenshot from TradingView. The user must supply
+  these for the audit step; without them the diff capture is impossible.
+- **Backward compatibility:** Pine constants (`altLTFWeight`,
+  `goldProxyWeight`, etc.) live in Rust as hard-coded `const f64` for
+  now. Future tuning may want to surface these to `config/default.toml`
+  under `[assets.<class>]` sections — opportunistic when touching the
+  module, not a blocker.
 
 ## Delivery Sequencing
 

@@ -117,25 +117,29 @@ impl StopLoss {
                                 config.sl_extra_usa_atr,
                             ));
                 let mut sl = base_stop.min(struct_stop.min(deep_stop));
-                // V61.6 wick-off cap.
+                // V61.6 wick-off cap (Pine: `wickLongSL` push-out).
                 let wick_sl = lowest_low(candles, config.wick_off_lookback)
                     - atr * config.wick_off_buffer_atr;
                 sl = sl.min(wick_sl);
-                // Hard cap by global max_sl_distance_atr.
-                sl = sl.max(ctx.close - atr * config.max_sl_distance_atr);
+                // Pine line 869: `longSL := max(longSL,
+                //   close - atr * maxSLDistanceATR * (useGoldEngine ? altSLFactor : 1.0))`
+                // Sub-phase 1.7.16 Gap G — apply `alt_sl_factor` so Gold /
+                // Altcoin can keep a wider absolute stop under chaotic flow.
+                sl = sl.max(ctx.close - atr * config.max_sl_distance_atr * ctx.alt_sl_factor);
 
+                // V61.6 too-wide reject check (Pine `maxSLDynamic`, line 1023).
+                // This stays in place because the dynamic per-session cap is
+                // used by the upstream "SL WIDE" reject gate. The cap is NOT
+                // applied as an extra clamp on `sl` — Pine doesn't do that.
                 let raw_distance_atr = if atr > 0.0 { (ew1 - sl) / atr } else { 0.0 };
                 let session_cap = max_sl_distance_for(
                     ctx.session,
                     config.max_sl_asia_atr,
                     config.max_sl_europe_atr,
                     config.max_sl_usa_atr,
-                );
+                ) * ctx.alt_sl_factor;
                 let too_wide = raw_distance_atr > session_cap;
-                let dyn_cap = ew1 - atr * session_cap;
-                sl = sl.max(dyn_cap);
-                // EW3 minus 0.05 ATR lower bound — Pine final clamp.
-                sl = sl.min(ew3 - atr * 0.05);
+                let _ = ew3; // EW3 ± 0.05 clamp removed (sub-phase 1.7.16 Gap G — not in Pine).
                 (sl, too_wide)
             }
             SignalDirection::Short => {
@@ -155,7 +159,9 @@ impl StopLoss {
                 let wick_sl = highest_high(candles, config.wick_off_lookback)
                     + atr * config.wick_off_buffer_atr;
                 sl = sl.max(wick_sl);
-                sl = sl.min(ctx.close + atr * config.max_sl_distance_atr);
+                // Pine line 870 mirror of the long path. Gap G applies
+                // `alt_sl_factor` to widen the absolute SHORT-SL cap.
+                sl = sl.min(ctx.close + atr * config.max_sl_distance_atr * ctx.alt_sl_factor);
 
                 let raw_distance_atr = if atr > 0.0 { (sl - ew1) / atr } else { 0.0 };
                 let session_cap = max_sl_distance_for(
@@ -163,11 +169,9 @@ impl StopLoss {
                     config.max_sl_asia_atr,
                     config.max_sl_europe_atr,
                     config.max_sl_usa_atr,
-                );
+                ) * ctx.alt_sl_factor;
                 let too_wide = raw_distance_atr > session_cap;
-                let dyn_cap = ew1 + atr * session_cap;
-                sl = sl.min(dyn_cap);
-                sl = sl.max(ew3 + atr * 0.05);
+                let _ = ew3; // see LONG branch comment
                 (sl, too_wide)
             }
             SignalDirection::Wait => (ctx.close, false),

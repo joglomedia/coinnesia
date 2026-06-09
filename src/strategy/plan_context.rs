@@ -80,6 +80,18 @@ pub struct PlanContext {
     /// the sideways-regime caps (0.36 / 0.66 / 0.96) apply via
     /// `is_sideways()`.
     pub is_daily: bool,
+    /// Sub-phase 1.7.16 Gap G — Pine `altSLFactor` (Gold V1 line 402,
+    /// Altcoin V62 line 390). Multiplies the absolute max-SL distance cap
+    /// (`maxSLDistanceATR * altSLFactor`) so volatile sessions can accept
+    /// a wider stop. Clamped to `[1.0, 1.55]` for Gold and `[1.0, 1.85]`
+    /// for Altcoin; BTC / Forex / IDX default to 1.0 (no extension).
+    pub alt_sl_factor: f64,
+    /// Sub-phase 1.7.16 Gap H — Pine `altTPFactor` (Gold V1 line 401,
+    /// Altcoin V62 line 389). Per-asset multiplier on `tpNRaw =
+    /// base ± atr * tpNATR * trendTPFactor * sessTPFactor * altTPFactor`.
+    /// Clamped to `[0.55, 1.08]` for Gold and `[0.38, 1.10]` for Altcoin;
+    /// BTC / Forex / IDX default to 1.0 (no compression).
+    pub alt_tp_factor: f64,
 }
 
 impl PlanContext {

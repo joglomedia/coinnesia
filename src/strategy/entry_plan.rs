@@ -288,6 +288,8 @@ mod tests {
             flow_trap_block: false,
             alt_ew_factor: 1.0,
             is_daily: false,
+            alt_sl_factor: 1.0,
+            alt_tp_factor: 1.0,
         }
     }
 
